@@ -37,6 +37,8 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 | `OFFCKB_REPO` | `--offckb-repo` | 覆盖源码仓库地址，可选择 fork；`latest` 不使用该值 |
 | `OFFCKB_REF` | `--offckb-ref` | 覆盖 `offckb.toml` 中的 `latest`、分支、tag、commit 或 `working-tree` |
 | `CKB_BIN` | `--ckb-bin` | 指定本地 CKB 二进制；未设置时尝试产品源码同级的 `ckb/target/release/ckb` |
+| `DEFAULT_CKB_BIN` | `--default-ckb-bin` | 默认前台启动使用的真实 CKB，版本必须与被测包的默认版本一致；未设置时复用 `CKB_BIN` 并检查版本 |
+| `CKB_DEBUGGER_BIN` | `--ckb-debugger-bin` | 项目用例使用的本地原生 `ckb-debugger`；未设置时从 `PATH` 查找，复制到隔离工具目录使用 |
 | `OFFCKB_SOURCE` | `--offckb-source` | 指定复用的本地 Git 仓库；自动查找 `source/offckb/`、`../offckb/`；该路径不决定分支版本 |
 | `OFFCKB_PACKAGE` | `--offckb-package` | 验收已有 `.tgz`，跳过源码打包；`make prepare` 只准备 Python 环境 |
 | `OFFCKB_ENTRY` | `--offckb-entry` | 仅用于调试：直接运行 `build/index.js`，跳过打包安装；与 package 互斥 |
@@ -45,9 +47,15 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 | `PNPM_CACHE_DIR` | `--pnpm-cache-dir` | 使用系统默认 pnpm metadata 缓存目录 |
 | `NODE_BIN` | `--node-bin` | 直接运行 JavaScript 入口时使用的 Node.js；默认从 `PATH` 查找 |
 
+默认前台启动用例通过已安装 CLI 的 `config list` 读取包默认 CKB 版本，再用本地二进制的 `--version` 核对。测试只在新用户目录中准备该版本的托管二进制，随后执行普通 `offckb node`，不预写版本设置。若日常业务用例的 `CKB_BIN` 版本不同，应另外配置 `DEFAULT_CKB_BIN`；更换被测 OffCKB 包后，其默认 CKB 版本也可能变化，不匹配时测试会明确报错。
+
+项目创建、构建和运行用例另需原生 `ckb-debugger`，用 `CKB_DEBUGGER_BIN` 指定路径；其他用例不要求此工具。这两个配置都指向预先准备好的可执行文件，`make prepare` 不下载它们，核心用例也不会在缺少工具时自动下载。工具副本或链接仅放入本次隔离目录，不修改开发者的 OffCKB 配置或工具缓存。
+
 源码安装、构建和测试应使用同一个 pnpm。机器上有多个版本时，在 `config/local.mk` 固定 `PNPM_BIN`，避免不同终端的 `PATH` 选择了不同版本。`make prepare` 在安装前检查 pnpm 10，不匹配时直接报错并提示配置路径；安装使用 `CI=true` 和逐行输出，不等待重装 `node_modules` 的交互确认，需要重建依赖目录时由 pnpm 自动处理。
 
 `make prepare` 为 `latest` 准备包和依赖缓存，源码模式安装构建依赖并构建。测试时使用 `--prefer-offline --ignore-scripts` 安装被测 tarball，缓存缺失时仍可能访问 registry。直接指定 `OFFCKB_PACKAGE` 时须提前准备依赖缓存。
+
+生成项目的依赖与 CLI 自身不同。项目用例默认设置 `npm_config_offline=true`，通过 `PNPM_STORE_DIR` / `PNPM_CACHE_DIR` 复用 pnpm 缓存；OffCKB 的 HOME/XDG 仍保持隔离。首次缺少项目依赖时，显式运行 `make test TESTS=tests/test_project_scaffolding.py ARGS='--project-online'` 允许下载并填充缓存，该次项目测试带 `network` marker，随后恢复普通 `make test`。只选择 `network` marker 本身不会授权联网，必须提供 `--project-online`。
 
 直接提供 `OFFCKB_PACKAGE` 或 `OFFCKB_ENTRY` 时，它们优先于版本配置。tarball 显示自身的包版本和 SHA256，不附加无依据的 Git commit；entry 明确显示为调试入口。版本配置本身不依赖 `make`，直接 pytest 也读取 `offckb.toml`，但本机的 `local.mk` 仅由 Makefile 读取。
 
@@ -57,6 +65,7 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 
 ```bash
 make test TESTS=tests/test_devnet_lifecycle.py
+make test TESTS=tests/test_default_node.py DEFAULT_CKB_BIN=/absolute/path/to/package-default-ckb/ckb
 make test ARGS='--collect-only'
 make test ARGS='--durations=0 --durations-min=0 --keep-runtime'
 ```
@@ -65,4 +74,4 @@ make test ARGS='--durations=0 --durations-min=0 --keep-runtime'
 
 pytest 启动时自动检查 `TEST-MAP`，检查失败则直接退出，成功结果在版本区块之后显示。直接运行 pytest 也执行同样检查。维护评审文档时，也可单独运行 `python3 scripts/check_test_map.py`；其 `--require-complete` 参数要求所有评审用例都有映射，尚未实现的后续批次会使该模式非零退出。
 
-需要直接调用 pytest 的 CI 或工具仍可使用 `.venv/bin/python -m pytest -c pyproject.toml -vv -m core tests --ckb-bin /absolute/path/to/ckb`。保留 `-c pyproject.toml` 和测试路径，避免外部路径参数影响 pytest 配置发现。
+需要直接调用 pytest 的 CI 或工具仍可使用 `.venv/bin/python -m pytest -c pyproject.toml -vv -m core tests --ckb-bin /absolute/path/to/ckb --default-ckb-bin /absolute/path/to/package-default-ckb/ckb --ckb-debugger-bin /absolute/path/to/ckb-debugger`。只运行不需要相应工具的模块时，可以省略后两个参数。保留 `-c pyproject.toml` 和测试路径，避免外部路径参数影响 pytest 配置发现。

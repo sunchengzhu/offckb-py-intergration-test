@@ -21,4 +21,6 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
   "core: local devnet user-flow regressions, independent of review priority",
+  "project: generated project creation, build, deployment and example tests",
+  "network: explicitly enabled external downloads, excluded from offline runs",
 ]

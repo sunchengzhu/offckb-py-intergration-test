@@ -128,28 +128,31 @@ class OffckbRunner:
         timeout_s: float | None = None,
         record: bool = True,
         sensitive_output: bool = False,
+        json_mode: bool = True,
     ) -> CommandResult:
-        argv = (*self.command, "--json", *(str(arg) for arg in args))
+        argv = (*self.command, *(("--json",) if json_mode else ()), *(str(arg) for arg in args))
         command_cwd = Path(cwd or self.cwd)
         self._register_argv_secrets(argv, command_cwd)
         started = time.monotonic()
+        process = subprocess.Popen(
+            argv,
+            cwd=command_cwd,
+            env=self.env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=command_cwd,
-                env=self.env,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout_s or self.default_timeout_s,
-                check=False,
+            stdout, stderr = process.communicate(
+                timeout=self.default_timeout_s if timeout_s is None else timeout_s
             )
-        except subprocess.TimeoutExpired as error:
+        except subprocess.TimeoutExpired:
+            stdout, stderr = _stop_command_group(process)
             duration_s = time.monotonic() - started
-            stdout = _text(error.stdout)
-            stderr = _text(error.stderr)
             if record:
                 self._record(
                     argv,
@@ -166,7 +169,17 @@ class OffckbRunner:
             raise AssertionError(
                 f"offckb command timed out after {duration_s:.1f}s: {_display_argv(argv)}\n"
                 f"stdout:\n{diagnostic_stdout}\nstderr:\n{diagnostic_stderr}"
-            ) from error
+            ) from None
+        except BaseException:
+            _stop_command_group(process)
+            raise
+
+        if process.returncode != 0:
+            # A failed package script may leave a child running with redirected
+            # output. Only clean the group created for this invocation; detached
+            # OffCKB daemons have their own group and remain owned by their fixture.
+            _stop_command_group(process)
+        completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
         duration_s = time.monotonic() - started
         parsed = _parse_single_result(completed.stdout)
@@ -197,14 +210,14 @@ class OffckbRunner:
                 f"offckb command failed ({completed.returncode}): {_display_argv(argv)}\n"
                 f"stdout:\n{diagnostic_stdout}\nstderr:\n{diagnostic_stderr}"
             )
-        if check and parsed is None:
+        if check and json_mode and parsed is None:
             diagnostic_stdout = self._diagnostic_text(completed.stdout, sensitive=sensitive_output)
             diagnostic_stderr = self._diagnostic_text(completed.stderr, sensitive=sensitive_output)
             raise AssertionError(
                 f"offckb command succeeded without one JSON result: {_display_argv(argv)}\n"
                 f"stdout:\n{diagnostic_stdout}\nstderr:\n{diagnostic_stderr}"
             )
-        if check and parsed.get("ok") is not True:
+        if check and json_mode and parsed.get("ok") is not True:
             diagnostic = self._diagnostic_text(repr(parsed), sensitive=sensitive_output)
             raise AssertionError(f"offckb JSON result did not report success: {diagnostic}")
         return result
@@ -279,10 +292,36 @@ class OffckbRunner:
         (self.records_dir / f"{stem}.stderr.log").write_text(recorded_stderr, encoding="utf-8")
 
 
-def _text(value: bytes | str | None) -> str:
-    if value is None:
-        return ""
-    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+def _stop_command_group(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Reap the command and stop its children without touching other sessions."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+        if process.poll() is None:
+            process.kill()
+        return process.communicate(timeout=5)
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # Even if the parent has exited and all pipes closed, a child can still
+        # be alive. Signal the original group, not just the parent PID.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return process.communicate(timeout=5)
 
 
 def _parse_single_result(stdout: str) -> dict[str, Any] | None:

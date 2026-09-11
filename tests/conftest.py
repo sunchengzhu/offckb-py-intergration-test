@@ -163,6 +163,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Local CKB binary; core tests never download one",
     )
     group.addoption("--startup-timeout", action="store", type=float, default=120.0)
+    group.addoption(
+        "--default-ckb-bin", default=os.environ.get("DEFAULT_CKB_BIN"),
+        help="Real CKB binary matching the package default; falls back to --ckb-bin",
+    )
+    group.addoption(
+        "--ckb-debugger-bin", default=os.environ.get("CKB_DEBUGGER_BIN") or shutil.which("ckb-debugger"),
+        help="Native ckb-debugger copied into the isolated user environment for project tests",
+    )
+    group.addoption(
+        "--project-online", action="store_true", default=False,
+        help="Allow project dependency downloads; marks project tests as network (offline by default)",
+    )
     group.addoption("--tx-timeout", action="store", type=float, default=180.0)
     group.addoption(
         "--keep-runtime",
@@ -177,6 +189,13 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError("the first offckb core integration runner supports Linux and macOS only")
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("offckb integration tests own fixed devnet ports and cannot run under pytest-xdist")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--project-online"):
+        for item in items:
+            if item.get_closest_marker("project") is not None:
+                item.add_marker(pytest.mark.network)
 
 
 def _configured_target(config: pytest.Config) -> Target:

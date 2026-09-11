@@ -21,9 +21,9 @@ ref = "latest"
 
 ## 快速开始
 
-需要 Linux 或 macOS、Python 3.11+、Node.js 20+、pnpm 10 和本地 CKB 0.205+ 二进制（已验证 pnpm 10.12.4、CKB 0.207.0）。端口 `8114`、`8115`、`18114`、`28114` 应空闲，测试串行执行。
+需要 Linux 或 macOS、Python 3.11+、Node.js 20+、pnpm 10、Git 和本地 CKB 二进制。普通业务用例使用 CKB 0.205+；默认启动用例另需与被测包默认版本一致的 CKB（例如 OffCKB 0.4.13 默认 0.208.0），项目用例需要原生 `ckb-debugger`。端口 `8114`、`8115`、`18114`、`28114` 应空闲，测试串行执行。
 
-在仓库根目录把 `config/local.mk.example` 复制为 `config/local.mk`，将 `CKB_BIN` 改为本机 CKB 的绝对路径。该配置只需填写一次，已被 Git 忽略。选择 `develop` 等源码模式时，优先复用 `source/offckb/` 或同级的 `../offckb/` Git 仓库；其他位置设置 `OFFCKB_SOURCE`。源码目录不存在时才克隆配置的仓库。
+在仓库根目录把 `config/local.mk.example` 复制为 `config/local.mk`，填写 `CKB_BIN`、`CKB_DEBUGGER_BIN` 的本机绝对路径；CKB 与被测包默认版本不同时，另填 `DEFAULT_CKB_BIN`。本机配置已被 Git 忽略。选择 `develop` 等源码模式时，优先复用 `source/offckb/` 或同级的 `../offckb/` Git 仓库；其他位置设置 `OFFCKB_SOURCE`。源码目录不存在时才克隆配置的仓库。
 
 日常只使用两个入口：
 
@@ -33,6 +33,8 @@ make test     # 检查 TEST-MAP，然后运行全部核心测试
 ```
 
 `make prepare` 创建 `.venv`、安装 Python 依赖，再下载发布包并准备 pnpm 依赖缓存；源码模式则安装构建依赖、构建并打包。准备版本和依赖时可能访问网络，不会自动下载 CKB。迁移或重新克隆后应重建虚拟环境，不要复制旧 `.venv`。Python 不叫 `python3.11` 时，可用 `make prepare PYTHON=python3` 指定 3.11+ 解释器。
+
+生成项目使用另一组依赖，默认从 pnpm 缓存离线安装。首次缺少缓存时，用 `make test TESTS=tests/test_project_scaffolding.py ARGS='--project-online'` 显式允许下载；后续正常运行 `make test`。CKB 与 debugger 均需提前准备，详见 [运行配置](config/README.md)。
 
 `make test` 自动固定 pytest 配置、核心 marker 和测试目录，流程为：校验已准备包及版本配置 → 将包复制到本次临时目录 → 隔离 prefix 安装 → 执行 `offckb --version` 并核对版本 → 启动 devnet → 执行用例 → 停止所属进程并释放端口。测试退出码会使 Make 成功或失败。
 
@@ -70,7 +72,7 @@ project/
 
 ## 隔离与失败诊断
 
-每次运行建立独立 HOME、XDG 根目录、临时 npm prefix 和 OffCKB settings；子进程只继承运行所需的环境变量白名单。测试通过私钥文件签名，并在日志中脱敏，不使用开发者真实的 OffCKB 数据。
+每次运行建立独立 HOME、XDG 根目录、临时 npm prefix 和 OffCKB settings；子进程只继承运行所需的环境变量白名单。签名使用私钥文件、`OFFCKB_PRIVATE_KEY` 或生成项目的 `.env`，日志做脱敏，不使用开发者真实的 OffCKB 数据。
 
 固定端口由跨进程文件锁保护；检测到已有服务时会报错退出。测试优先通过产品 `node stop` 清理所属服务，确认进程和端口退出后结束。
 
@@ -78,7 +80,7 @@ project/
 
 ## 产品内部测试与评审
 
-OffCKB 自身的 `pnpm typecheck`、`pnpm lint`、`pnpm test:ci` 和 shell 测试继续作为产品仓库门禁。本工程不套壳运行 Jest，只复用稳定的测试数据语义，并独立核验真实副作用。
+OffCKB 自身的 `pnpm typecheck`、`pnpm lint`、`pnpm test:ci` 和 shell 测试继续作为产品仓库门禁。本工程独立核验 CLI 的真实副作用；项目场景会运行生成项目交付给用户的 mock/devnet 示例，并另外检查调用交易已确认、引用本次部署的合约。
 
 评审用例位于 `reviews/`。按 `AGENTS.md` 先提交行为变更供人工确认，再实现对应自动化；每个映射使用 `TEST-MAP: <CASE-ID>`。`make test` 自动计算覆盖并检查重复评审 ID、孤立代码映射；未映射的后续用例只报告，不阻止运行。
 
