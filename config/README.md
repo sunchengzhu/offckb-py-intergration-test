@@ -38,7 +38,7 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 | `OFFCKB_REF` | `--offckb-ref` | 覆盖 `offckb.toml` 中的 `latest`、分支、tag、commit 或 `working-tree` |
 | `CKB_BIN` | `--ckb-bin` | 指定本地 CKB 二进制；未设置时尝试产品源码同级的 `ckb/target/release/ckb` |
 | `DEFAULT_CKB_BIN` | `--default-ckb-bin` | 默认前台启动使用的真实 CKB，版本必须与被测包的默认版本一致；未设置时复用 `CKB_BIN` 并检查版本 |
-| `CKB_DEBUGGER_BIN` | `--ckb-debugger-bin` | 项目用例使用的本地原生 `ckb-debugger`；未设置时从 `PATH` 查找，复制到隔离工具目录使用 |
+| `CKB_DEBUGGER_BIN` | `--ckb-debugger-bin` | 项目及合约调试、日志用例使用的本地原生 `ckb-debugger`；未设置时从 `PATH` 查找，复制到隔离工具目录使用 |
 | `OFFCKB_SOURCE` | `--offckb-source` | 指定复用的本地 Git 仓库；自动查找 `source/offckb/`、`../offckb/`；该路径不决定分支版本 |
 | `OFFCKB_PACKAGE` | `--offckb-package` | 验收已有 `.tgz`，跳过源码打包；`make prepare` 只准备 Python 环境 |
 | `OFFCKB_ENTRY` | `--offckb-entry` | 仅用于调试：直接运行 `build/index.js`，跳过打包安装；与 package 互斥 |
@@ -49,7 +49,7 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 
 默认前台启动用例通过已安装 CLI 的 `config list` 读取包默认 CKB 版本，再用本地二进制的 `--version` 核对。测试只在新用户目录中准备该版本的托管二进制，随后执行普通 `offckb node`，不预写版本设置。若日常业务用例的 `CKB_BIN` 版本不同，应另外配置 `DEFAULT_CKB_BIN`；更换被测 OffCKB 包后，其默认 CKB 版本也可能变化，不匹配时测试会明确报错。
 
-项目创建、构建和运行用例另需原生 `ckb-debugger`，用 `CKB_DEBUGGER_BIN` 指定路径；其他用例不要求此工具。这两个配置都指向预先准备好的可执行文件，`make prepare` 不下载它们，核心用例也不会在缺少工具时自动下载。工具副本或链接仅放入本次隔离目录，不修改开发者的 OffCKB 配置或工具缓存。
+项目创建、构建和运行，以及使用真实项目合约的调试、日志用例另需原生 `ckb-debugger`，用 `CKB_DEBUGGER_BIN` 指定路径；系统脚本等其他用例不要求此工具。这两个配置都指向预先准备好的可执行文件，`make prepare` 不下载它们，核心用例也不会在缺少工具时自动下载。工具副本或链接仅放入本次隔离目录，不修改开发者的 OffCKB 配置或工具缓存。
 
 源码安装、构建和测试应使用同一个 pnpm。机器上有多个版本时，在 `config/local.mk` 固定 `PNPM_BIN`，避免不同终端的 `PATH` 选择了不同版本。`make prepare` 在安装前检查 pnpm 10，不匹配时直接报错并提示配置路径；安装使用 `CI=true` 和逐行输出，不等待重装 `node_modules` 的交互确认，需要重建依赖目录时由 pnpm 自动处理。
 

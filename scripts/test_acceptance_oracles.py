@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from tests.asset_assertions import assert_udt_balance
 from tests.harness import Account, DevnetManager, OffckbRunner, RpcClient, rpc_script
 from tests.test_contract_deployment import _assert_deployment_owner
+from tests.test_transaction_debugging import _assert_debug_context
 from tests.test_udt_lifecycle import _assert_issue_transaction
 
 
@@ -141,6 +142,77 @@ class AssetObservationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             _assert_deployment_owner({"lock": wrong_lock}, {"output": {"lock": wrong_lock}},
                                      self.account.lock_script)
+
+
+class DebugContextObservationTests(unittest.TestCase):
+    def setUp(self):
+        points = [{"tx_hash": "0x" + byte * 32, "index": "0x0"} for byte in ("11", "22", "33", "44")]
+        owner, group, first_code, second_code = points
+        group_data = "0x" + (
+            (2).to_bytes(4, "little")
+            + bytes.fromhex(first_code["tx_hash"][2:]) + (0).to_bytes(4, "little")
+            + bytes.fromhex(second_code["tx_hash"][2:]) + (0).to_bytes(4, "little")
+        ).hex()
+        lock = {"code_hash": "0x" + "aa" * 32, "hash_type": "type", "args": "0x1234"}
+        output = {"capacity": "0x174876e800", "lock": lock, "type": None}
+        self.chain = {
+            point["tx_hash"]: {
+                "tx_status": {"status": "committed"},
+                "transaction": {"outputs": [copy.deepcopy(output)], "outputs_data": [data]},
+            }
+            for point, data in zip(points, ("0x", group_data, "0x1234", "0x5678"))
+        }
+        transaction = {
+            "inputs": [{"previous_output": owner, "since": "0x0"}],
+            "cell_deps": [{"out_point": group, "dep_type": "dep_group"}],
+            "outputs": [copy.deepcopy(output)],
+            "outputs_data": ["0x"],
+        }
+        self.call = SimpleNamespace(transaction=copy.deepcopy(transaction))
+        self.dump = {
+            "tx": copy.deepcopy(transaction),
+            "mock_info": {
+                "inputs": [{"input": copy.deepcopy(transaction["inputs"][0]),
+                            "output": copy.deepcopy(output), "data": "0x"}],
+                "cell_deps": [
+                    {"cell_dep": {"out_point": copy.deepcopy(point), "dep_type": dep_type},
+                     "output": copy.deepcopy(output), "data": data}
+                    for point, dep_type, data in (
+                        (group, "dep_group", group_data),
+                        (first_code, "code", "0x1234"),
+                        (second_code, "code", "0x5678"),
+                    )
+                ],
+            },
+        }
+
+        def read_transaction(method, params):
+            self.assertEqual(method, "get_transaction")
+            return copy.deepcopy(self.chain[params[0]])
+
+        self.rpc = Mock(spec=RpcClient)
+        self.rpc.call.side_effect = read_transaction
+
+    def test_complete_context_matches_the_real_inputs_and_resolved_dependency_group(self):
+        _assert_debug_context(self.call, self.rpc, self.dump)
+
+    def test_missing_dependency_group_member_is_detected(self):
+        self.dump["mock_info"]["cell_deps"].pop()
+        with self.assertRaisesRegex(AssertionError, "dependency-group member"):
+            _assert_debug_context(self.call, self.rpc, self.dump)
+
+    def test_wrong_input_or_dependency_content_is_detected(self):
+        for kind, index in (("inputs", 0), ("cell_deps", 1)):
+            for field in ("output", "data"):
+                with self.subTest(kind=kind, field=field):
+                    dump = copy.deepcopy(self.dump)
+                    item = dump["mock_info"][kind][index]
+                    if field == "data":
+                        item["data"] = "0xbad0"
+                    else:
+                        item["output"]["lock"]["args"] = "0x5678"
+                    with self.assertRaises(AssertionError):
+                        _assert_debug_context(self.call, self.rpc, dump)
 
 
 if __name__ == "__main__":
