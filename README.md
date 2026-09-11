@@ -4,6 +4,46 @@
 
 首期覆盖节点生命周期、账户和 CKB 流转、SUDT/xUDT 生命周期、合约部署与 Type ID 升级。项目脚手架、RPC proxy 与日志的独立验收留待后续批次。
 
+## 选择被测 OffCKB 版本
+
+版本统一配置在 [config/offckb.toml](config/offckb.toml)，默认测试 npm 上最新发布的 `@offckb/cli`：
+
+```toml
+repo = "https://github.com/ckb-devrel/offckb.git"
+ref = "latest"
+```
+
+`latest` 在每次 `make prepare` 时解析 npm 的 `latest` 标签，下载原始发布包并校验完整性，无需产品源码。准备完成时用一行显示包内版本和来源。每次 `make test` 固定使用已准备的包，隔离安装后执行被测程序的 `offckb --version`，核对包内版本，在日志最前面显示实际版本、来源和包 SHA256，再输出映射检查结果及 pytest 日志。
+
+测试开发分支时将 `ref` 改为 `"develop"`，随后执行相同的 `make prepare`、`make test`。也支持其他远端分支、tag（如 `v0.4.13`）、具体 commit；测试本地源码及未提交修改时设为 `working-tree`。源码模式额外显示实际 commit 和是否包含本地修改。
+
+修改版本配置后必须重新准备。分支/tag/commit 模式从 Git 内容导出临时源码，不切换开发者工作区；本地分支即使也叫 `develop`，其未推送提交也不会混入远端 `develop` 测试。
+
+## 快速开始
+
+需要 Linux 或 macOS、Python 3.11+、Node.js 20+、pnpm 10 和本地 CKB 0.205+ 二进制（已验证 pnpm 10.12.4、CKB 0.207.0）。端口 `8114`、`8115`、`18114`、`28114` 应空闲，测试串行执行。
+
+在仓库根目录把 `config/local.mk.example` 复制为 `config/local.mk`，将 `CKB_BIN` 改为本机 CKB 的绝对路径。该配置只需填写一次，已被 Git 忽略。选择 `develop` 等源码模式时，优先复用 `source/offckb/` 或同级的 `../offckb/` Git 仓库；其他位置设置 `OFFCKB_SOURCE`。源码目录不存在时才克隆配置的仓库。
+
+日常只使用两个入口：
+
+```bash
+make prepare  # 准备环境和所选版本，默认下载最新发布包
+make test     # 检查 TEST-MAP，然后运行全部核心测试
+```
+
+`make prepare` 创建 `.venv`、安装 Python 依赖，再下载发布包并准备 pnpm 依赖缓存；源码模式则安装构建依赖、构建并打包。准备版本和依赖时可能访问网络，不会自动下载 CKB。迁移或重新克隆后应重建虚拟环境，不要复制旧 `.venv`。Python 不叫 `python3.11` 时，可用 `make prepare PYTHON=python3` 指定 3.11+ 解释器。
+
+`make test` 自动固定 pytest 配置、核心 marker 和测试目录，流程为：校验已准备包及版本配置 → 将包复制到本次临时目录 → 隔离 prefix 安装 → 执行 `offckb --version` 并核对版本 → 启动 devnet → 执行用例 → 停止所属进程并释放端口。测试退出码会使 Make 成功或失败。
+
+单模块运行仍用同一个入口：
+
+```bash
+make test TESTS=tests/test_devnet_lifecycle.py
+```
+
+`TESTS` 也接受 pytest node ID，额外参数通过 `ARGS` 传入。已有发布包验收、调试入口、依赖缓存、耗时和仅收集用例等选项统一见 [运行配置](config/README.md)。
+
 ## 目录与源码
 
 ```text
@@ -12,93 +52,21 @@ project/
 └── offckb-py-intergration-test/   # 本测试仓库
     ├── reviews/                 # 中文评审用例
     ├── tests/                   # pytest 用例与运行设施
-    ├── scripts/                 # TEST-MAP 检查工具
-    ├── config/                  # 测试配置说明
+    ├── scripts/                 # 版本准备与 TEST-MAP 检查工具
+    ├── Makefile                 # prepare / test 统一入口
+    ├── config/                  # offckb.toml 版本配置、本机配置示例
     ├── fixtures/                # 测试数据说明
     ├── templates/               # 用例评审模板
-    └── source/offckb            # 可选本地源码链接，不提交 Git
+    └── source/                  # 本地源码、.prepared 发布包缓存，不提交 Git
 ```
 
-被测源码按以下顺序选择：
+源码构建模式按以下顺序选择本地 Git 仓库：
 
 1. `--offckb-source /absolute/path/to/offckb`，或环境变量 `OFFCKB_SOURCE`。
 2. 本仓库内的 `source/offckb/`。
 3. 与本仓库同级的 `../offckb/`。
 
-需要链接其他位置的源码时，在测试仓库根目录执行（目标必须尚不存在）：
-
-```bash
-ln -s /absolute/path/to/offckb source/offckb
-```
-
-上述目录必须是 `@offckb/cli` 源码根。也可通过 `--offckb-package` 验收 tarball，无须在测试仓库中保存产品源码。
-
-## 首次准备
-
-- Linux 或 macOS，Python 3.11+。
-- Node.js 20+，pnpm 10（已用 10.12.4 验证）。同一终端中的安装、构建和测试应使用同一 pnpm；必要时传 `--pnpm-bin`。
-- 本地可执行的 CKB 0.205+ 二进制（已用 0.207.0 验证）；核心测试不会下载 CKB。
-- 本地端口 `8114`、`8115`、`18114`、`28114` 空闲；不可使用 pytest-xdist 并行运行。
-
-在测试仓库根目录创建环境。迁移或重新克隆后应重建 `.venv`，不要复制旧目录的虚拟环境：
-
-```bash
-cd /absolute/path/to/offckb-py-intergration-test
-python3.11 -m venv .venv
-.venv/bin/python -m pip install -e .
-```
-
-在产品源码目录安装依赖并构建：
-
-```bash
-pnpm -C /absolute/path/to/offckb install --frozen-lockfile
-pnpm -C /absolute/path/to/offckb build
-```
-
-安装会填充 pnpm store。套件使用 `--prefer-offline --ignore-scripts` 安装被测 tarball，优先复用缓存，缺失的 metadata 或依赖仍可能访问 registry；真实链上测试不需要公共网络服务。
-
-## 运行核心测试
-
-从测试仓库根目录执行，显式指定 `-c pyproject.toml` 与 `tests`，防止 pytest 因二进制参数指向其他工程而加载错误配置：
-
-```bash
-.venv/bin/pytest -c pyproject.toml -vv -m core tests \
-  --ckb-bin /absolute/path/to/ckb
-```
-
-默认流程为：找到产品源码 → `pnpm pack` → 隔离 prefix 安装 → 调用安装后的 CLI → 启动 devnet → 执行用例 → 停止所属进程并释放端口。源码变更后应先重新构建。
-
-指定其他源码及 pnpm：
-
-```bash
-.venv/bin/pytest -c pyproject.toml -vv -m core tests \
-  --offckb-source /absolute/path/to/offckb \
-  --pnpm-bin /absolute/path/to/pnpm \
-  --ckb-bin /absolute/path/to/ckb
-```
-
-验收已有发布包：
-
-```bash
-.venv/bin/pytest -c pyproject.toml -vv -m core tests \
-  --offckb-package /absolute/path/to/offckb-cli.tgz \
-  --ckb-bin /absolute/path/to/ckb
-```
-
-如 pnpm 缓存位于非默认位置，可补充 `--pnpm-store-dir /absolute/path/to/store/v10` 和 `--pnpm-cache-dir /absolute/path/to/pnpm`。纯 tarball 环境需先准备依赖缓存。
-
-本地快速调试时，可用 `--offckb-entry /absolute/path/to/offckb/build/index.js` 跳过打包安装；该参数与 `--offckb-package` 互斥。发布验收应使用默认打包流程或 tarball。
-
-按模块聚焦执行：
-
-```bash
-.venv/bin/pytest -c pyproject.toml -vv tests/test_devnet_lifecycle.py --ckb-bin /absolute/path/to/ckb
-.venv/bin/pytest -c pyproject.toml -vv tests/test_ckb_value_flow.py --ckb-bin /absolute/path/to/ckb
-.venv/bin/pytest -c pyproject.toml -vv tests/test_udt_lifecycle.py --ckb-bin /absolute/path/to/ckb
-.venv/bin/pytest -c pyproject.toml -vv tests/test_contract_deployment.py --ckb-bin /absolute/path/to/ckb
-```
-
-pytest 结束时显示总耗时；在命令中加 `--durations=0 --durations-min=0` 可查看所有用例的 setup/call/teardown 耗时。只收集用例、不启动节点时加 `--collect-only`。
+上述目录必须是 `@offckb/cli` 源码根。默认 `latest` 或通过 `OFFCKB_PACKAGE` 验收 tarball 时无须产品源码。源码目录和链接的说明见 [source/README.md](source/README.md)。
 
 ## 隔离与失败诊断
 
@@ -112,18 +80,12 @@ pytest 结束时显示总耗时；在命令中加 `--durations=0 --durations-min
 
 OffCKB 自身的 `pnpm typecheck`、`pnpm lint`、`pnpm test:ci` 和 shell 测试继续作为产品仓库门禁。本工程不套壳运行 Jest，只复用稳定的测试数据语义，并独立核验真实副作用。
 
-评审用例位于 `reviews/`。按 `AGENTS.md` 先提交行为变更供人工确认，再实现对应自动化；每个映射使用 `TEST-MAP: <CASE-ID>`。检查当前覆盖：
-
-```bash
-.venv/bin/python scripts/check_test_map.py
-```
-
-`--require-complete` 要求全部评审用例都已自动化，首期尚未实现的后续批次会使该模式非零退出。
+评审用例位于 `reviews/`。按 `AGENTS.md` 先提交行为变更供人工确认，再实现对应自动化；每个映射使用 `TEST-MAP: <CASE-ID>`。`make test` 自动计算覆盖并检查重复评审 ID、孤立代码映射；未映射的后续用例只报告，不阻止运行。
 
 ## 独立 GitHub 仓库
 
-本目录可以直接作为独立仓库根目录推送。`.gitignore` 已排除源码链接、虚拟环境、缓存、二进制包和运行报告；版本管理只包含测试代码、评审文档及配置。
+仓库地址：[sunchengzhu/offckb-py-intergration-test](https://github.com/sunchengzhu/offckb-py-intergration-test)。`.gitignore` 已排除源码链接、虚拟环境、缓存、二进制包和运行报告；版本管理只包含测试代码、评审文档及配置。
 
-后续创建远程仓库后，为本地仓库添加该远程地址并推送 `main` 分支即可。GitHub CI 中分别准备产品源码、Node/pnpm、Python 和 CKB artifact，再使用上面的显式参数执行测试，无需将测试放回产品仓库。
+修改通过独立分支向 `main` 发起 PR，评审后合并。CI 环境准备 Node/pnpm、Python 和 CKB artifact，通过环境变量传入路径后同样执行 `make prepare`、`make test`，源码模式按需获取产品源码。
 
 本工程从 OffCKB 的 `integration-tests/` 拆出，保留原 MIT 许可证，见 `LICENSE`。

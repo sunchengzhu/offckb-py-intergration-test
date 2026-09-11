@@ -1,0 +1,7 @@
+# 被测 OffCKB 版本。make prepare 更新目标，make test 使用已准备的包。
+repo = "https://github.com/ckb-devrel/offckb.git"
+ref = "latest"
+
+# latest：npm @offckb/cli 最新发布包，无需源码；repo 仅用于源码构建模式。
+# ref = "develop"：构建官方远端 develop 分支；也支持 tag、commit 或 working-tree。
+# 本机源码路径、CKB 和 pnpm 路径放在 config/local.mk。

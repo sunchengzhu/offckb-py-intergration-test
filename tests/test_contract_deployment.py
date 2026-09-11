@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from .harness import rpc_script
+
 
 _CKB_HASH_PERSONALIZATION = b"ckb-default-hash"
 _HASH_TYPE_BYTES = {"data": 0, "type": 1, "data1": 2, "data2": 4}
@@ -138,8 +140,12 @@ def _assert_deployment_toml(
     assert set(deployment["lock"]) == {"code_hash", "args", "hash_type"}
 
 
-def _assert_recorded_lock_matches_chain(deployment: dict[str, Any], live_cell: dict[str, Any]) -> None:
-    assert deployment["lock"] == live_cell["output"]["lock"]
+def _assert_deployment_owner(
+    deployment: dict[str, Any], live_cell: dict[str, Any], expected_lock: dict[str, Any]
+) -> None:
+    expected = rpc_script(expected_lock)
+    assert deployment["lock"] == expected
+    assert live_cell["output"]["lock"] == expected
 
 
 def _assert_type_id_script(type_script: dict[str, str]) -> None:
@@ -211,7 +217,8 @@ def test_deploy_immutable_contract(
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "immutable-contract.bin", _IMMUTABLE_CONTRACT)
     output = tmp_path / "deployment"
-    key_file = private_key_file(accounts[0])
+    owner = accounts[7]
+    key_file = private_key_file(owner)
 
     _run_deploy(offckb, contract, output, key_file, type_id=False)
 
@@ -223,7 +230,7 @@ def test_deploy_immutable_contract(
 
     _wait_committed(rpc, recipe["tx_hash"])
     live_cell = _assert_live_code_cell(rpc, recipe, _IMMUTABLE_CONTRACT)
-    _assert_recorded_lock_matches_chain(deployment, live_cell)
+    _assert_deployment_owner(deployment, live_cell, owner.lock_script)
     assert live_cell["output"]["type"] is None
     assert recipe.get("type_id") is None
     _assert_script_record(
@@ -246,7 +253,8 @@ def test_first_type_id_deployment(
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "type-id-contract.bin", _TYPE_ID_CONTRACT_V1)
     output = tmp_path / "deployment"
-    key_file = private_key_file(accounts[0])
+    owner = accounts[7]
+    key_file = private_key_file(owner)
 
     _run_deploy(offckb, contract, output, key_file, type_id=True)
 
@@ -261,7 +269,7 @@ def test_first_type_id_deployment(
     type_script = live_cell["output"]["type"]
     assert type_script is not None
     _assert_type_id_script(type_script)
-    _assert_recorded_lock_matches_chain(deployment, live_cell)
+    _assert_deployment_owner(deployment, live_cell, owner.lock_script)
     assert recipe["type_id"].startswith("0x")
     assert recipe["type_id"] == _script_hash(type_script)
     _assert_script_record(
@@ -284,7 +292,8 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "upgradable-contract.bin", _TYPE_ID_CONTRACT_V1)
     output = tmp_path / "deployment"
-    key_file = private_key_file(accounts[0])
+    owner = accounts[7]
+    key_file = private_key_file(owner)
 
     _run_deploy(offckb, contract, output, key_file, type_id=True)
     old_migrations = _migration_files(output, contract.name)
@@ -292,6 +301,8 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
     old_recipe = _read_migration(old_migrations[0], contract.name)
     _wait_committed(rpc, old_recipe["tx_hash"])
     old_cell = _assert_live_code_cell(rpc, old_recipe, _TYPE_ID_CONTRACT_V1)
+    old_deployment, _ = _read_artifacts(output, contract)
+    _assert_deployment_owner(old_deployment, old_cell, owner.lock_script)
     old_type_script = old_cell["output"]["type"]
     assert old_type_script is not None
     _assert_type_id_script(old_type_script)
@@ -327,7 +338,7 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
 
     deployment, scripts = _read_artifacts(output, contract)
     _assert_deployment_toml(deployment, contract, type_id=True)
-    _assert_recorded_lock_matches_chain(deployment, new_cell)
+    _assert_deployment_owner(deployment, new_cell, owner.lock_script)
     _assert_script_record(
         _script_record(scripts, contract.name),
         new_recipe,

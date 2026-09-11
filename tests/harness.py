@@ -96,8 +96,11 @@ class OffckbRunner:
         cwd: Path,
         records_dir: Path,
         default_timeout_s: float = 180.0,
+        cli_entry: Path | None = None,
     ) -> None:
         self.command = tuple(command)
+        # Process ownership only: never override how the packaged CLI starts itself.
+        self.cli_entry = cli_entry or Path(self.command[-1])
         self.env = dict(env)
         self.cwd = cwd
         self.records_dir = records_dir
@@ -481,6 +484,23 @@ class RpcClient:
             total += int.from_bytes(raw, byteorder="little", signed=False)
         return total
 
+    def udt_balances(self, lock_script: Mapping[str, Any]) -> dict[tuple[str, str, str, str], int]:
+        """Discover assets from lock-indexed live cells and the effective chain spec."""
+        assert set(self._udt_scripts) == {"sudt", "xudt"}, "effective UDT scripts are not loaded"
+        balances: dict[tuple[str, str, str, str], int] = {}
+        for cell in self.live_cells(lock_script):
+            script = cell["output"].get("type")
+            if script is None:
+                continue
+            for kind, expected in self._udt_scripts.items():
+                if any(script[field] != expected[field] for field in ("code_hash", "hash_type")):
+                    continue
+                data = bytes.fromhex(cell["output_data"].removeprefix("0x"))
+                assert len(data) >= 16, f"invalid UDT amount data: {cell['out_point']}"
+                key = (kind, script["code_hash"], script["hash_type"], script["args"])
+                balances[key] = balances.get(key, 0) + int.from_bytes(data[:16], "little")
+        return balances
+
     def get_live_cell(self, tx_hash: str, index: int) -> dict[str, Any]:
         result = self.call("get_live_cell", [{"tx_hash": tx_hash, "index": hex(index)}, True])
         if not isinstance(result, dict):
@@ -655,7 +675,7 @@ class DevnetManager:
 
     @property
     def _owned_cli_entry(self) -> str:
-        value = self.runner.env.get("OFFCKB_CLI_PATH") or str(self.runner.command[-1])
+        value = self.runner.cli_entry
         # Keep the package-visible path as the primary identity. `_path_aliases`
         # also adds its resolved pnpm-store target, so process commands using
         # either side of pnpm's symlink layout are accepted.
@@ -933,16 +953,16 @@ class DevnetManager:
                 timeout_s=10.0,
                 description=f"owned daemon PID/group {owned_pid}/{owned_pgid} to exit",
             )
-        self._remove_owned_pid_file_after_exit(owned_pid)
+        if command_error is not None:
+            # Cleanup may repair state only after a failure, never turn it into success.
+            raise command_error
         wait_until(
             lambda: not self.pid_file.exists(),
             timeout_s=5.0,
-            description=f"daemon PID metadata {self.pid_file} to be removed",
+            description=f"OffCKB itself to remove daemon PID metadata {self.pid_file}",
         )
         self.pid = None
         self.pgid = None
-        if command_error is not None:
-            raise command_error
         return payload
 
     def reset(self) -> "DevnetManager":

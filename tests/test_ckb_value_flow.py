@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from .asset_assertions import assert_udt_balance
+
 
 SHANNONS_PER_CKB = 100_000_000
 GENESIS_ACCOUNT_BALANCE = 42_000_000 * SHANNONS_PER_CKB
@@ -234,11 +236,25 @@ def test_fresh_devnet_exposes_twenty_prefunded_accounts(
 
 
 # TEST-MAP: CKB-02
-def test_balance_matches_indexer_capacity_without_udt_scan(devnet: Any, offckb: Any, rpc: Any, accounts: list[Any]) -> None:
+def test_balance_omits_existing_udt_only_when_requested(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any
+) -> None:
     del devnet
     rpc.wait_indexer()
-    account = accounts[0]
+    account = accounts[6]
     address = str(_field(account, "address"))
+    type_args = rpc.script_hash(_account_lock(account))
+    amount = 1234
+    before = rpc.udt_balance(_account_lock(account), "sudt", type_args)
+    issued = _json_result(offckb.run(
+        "udt", "issue", str(amount), "--network", "devnet", "--udt-kind", "sudt",
+        "--privkey-file", str(private_key_file(account)),
+    ))
+    _wait_committed_and_indexed(rpc, _tx_hash(issued))
+    assert assert_udt_balance(offckb, rpc, account, "sudt", type_args) == before + amount
+
+    with_udt = _json_result(offckb.run("balance", address, "--network", "devnet"))
+    assert with_udt["udt"], "the --no-udt control account must actually hold discoverable UDT"
 
     result = _json_result(offckb.run("balance", address, "--network", "devnet", "--no-udt", "--json"))
 
@@ -246,7 +262,16 @@ def test_balance_matches_indexer_capacity_without_udt_scan(devnet: Any, offckb: 
     assert result["network"] == "devnet"
     assert result["address"] == address
     assert result["udt"] == []
-    assert _ckb_to_shannons(result["ckb"]) == rpc.ckb_balance(_account_lock(account))
+    assert _ckb_to_shannons(result["ckb"]) == _ckb_to_shannons(with_udt["ckb"])
+    live_cells = rpc.live_cells(_account_lock(account))
+    pure_ckb = sum(
+        _quantity(cell["output"]["capacity"])
+        for cell in live_cells
+        if cell["output"].get("type") is None and cell["output_data"] == "0x"
+    )
+    total_capacity = sum(_quantity(cell["output"]["capacity"]) for cell in live_cells)
+    assert pure_ckb < total_capacity, "UDT cells must make pure CKB differ from total capacity"
+    assert _ckb_to_shannons(result["ckb"]) == pure_ckb
 
 
 # TEST-MAP: CKB-03
@@ -281,7 +306,7 @@ def test_transfer_uses_private_key_file_and_accounts_for_the_actual_fee(
     accounts: list[Any],
     private_key_file: Any,
 ) -> None:
-    sender, receiver = accounts[0], accounts[1]
+    sender, receiver = accounts[8], accounts[9]
     receiver_address = str(_field(receiver, "address"))
     sender_lock = _account_lock(sender)
     receiver_lock = _account_lock(receiver)

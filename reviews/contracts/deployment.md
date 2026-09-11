@@ -15,9 +15,9 @@
 
 | 用例 | 场景 | 预期结果 | 防止的问题 | 优先级 |
 | --- | --- | --- | --- | --- |
-| `DEPLOY-01` | 使用私钥文件和 `--yes` 部署一个小型确定性二进制，且不启用 Type ID | 部署交易最终 committed；输出目录生成该合约的 `deployment.toml`、migration 和 `scripts.json`；记录的 outpoint 为 live，cell data 与输入字节完全一致，data hash 与链上一致，记录的 occupied capacity 与合约 data 长度一致，code cell 没有 Type-ID type script | CLI 报告部署成功但字节未上链，或部署记录与真实 cell 不一致 | P0 |
-| `DEPLOY-02` | 对尚无部署记录的同名二进制执行首次 `deploy --type-id` | 交易最终 committed；记录包含非空 Type ID，链上 code cell 的 Type-ID script hash 与记录一致，cell data 与输入字节一致 | 可升级部署没有创建有效 Type ID，导致后续无法安全定位旧 code cell | P0 |
-| `DEPLOY-03` | 修改同名二进制内容，并复用原输出目录再次执行 `deploy --type-id` | 升级交易最终 committed；旧 code cell 被消费，新 code cell 保存新字节且保持相同 Type-ID args/hash；新增 migration 和 `scripts.json` 指向新 live outpoint | “升级”实际创建了另一份身份不同的合约，或记录仍指向已消费 cell | P0 |
+| `DEPLOY-01` | 使用非默认账户的私钥文件和 `--yes` 部署一个小型确定性二进制，且不启用 Type ID | 部署交易最终 committed；输出目录生成该合约的 `deployment.toml`、migration 和 `scripts.json`；记录与链上 code cell 的 lock 均等于指定账户的 lock；记录的 outpoint 为 live，cell data 与输入字节完全一致，data hash 与链上一致，记录的 occupied capacity 与合约 data 长度一致，code cell 没有 Type-ID type script | 忽略私钥参数后记录与链上一起归属错误账户，CLI 报告成功但字节未上链，或记录失真 | P0 |
+| `DEPLOY-02` | 使用非默认账户的私钥文件，对尚无部署记录的同名二进制执行首次 `deploy --type-id` | 交易最终 committed；记录与链上 code cell 的 lock 均等于指定账户的 lock；记录包含非空 Type ID，链上 Type-ID script hash 与记录一致，cell data 与输入字节一致 | 可升级部署归属错误账户或没有创建有效 Type ID，导致后续无法升级 | P0 |
+| `DEPLOY-03` | 使用同一个非默认账户的私钥文件完成首次 Type-ID 部署，修改二进制内容后复用原输出目录再次执行 `deploy --type-id` | 升级交易最终 committed；升级前后的记录与 code cell lock 均等于指定账户的 lock；旧 code cell 被消费，新 code cell 保存新字节且保持相同 Type-ID args/hash；新增 migration 和 `scripts.json` 指向新 live outpoint | 升级归属错误账户、创建另一份身份不同的合约，或记录仍指向已消费 cell | P0 |
 | `DEPLOY-04` | 首次 Type-ID 部署后篡改最新 migration 中的 Type ID，再尝试升级 | 命令非零退出且不生成新的成功 migration；旧 code cell 仍为 live、内容不变，错误明确指出记录与链上 Type ID 不匹配 | 损坏或被替换的部署记录导致消费错误 cell，或失败后留下伪成功记录 | P1 |
 
 ## 本轮需要确认

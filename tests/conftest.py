@@ -8,12 +8,15 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
 
 import pytest
+
+from scripts.offckb_target import Target, describe, load_prepared, package_info, target_settings
 
 from .harness import (
     Account,
@@ -69,6 +72,36 @@ class OffckbArtifact:
     package_sha256: str | None = None
     product_root: Path | None = None
     install_prefix: Path | None = None
+    target_info: dict | None = None
+
+
+@dataclass(frozen=True)
+class _SessionRuntime:
+    root: Path
+    product_root: Path
+    ckb_binary: Path
+    env: dict[str, str]
+    artifact: OffckbArtifact
+    command: tuple[str, ...]
+    runner: OffckbRunner
+
+
+@dataclass
+class _RunDirectory:
+    root: Path
+    keep: bool
+    failed: bool = True
+
+    def cleanup(self) -> None:
+        if self.keep or self.failed:
+            scrub_secret_artifacts(self.root)
+            print(f"offckb isolated runtime kept at: {self.root}", flush=True)
+        else:
+            shutil.rmtree(self.root)
+
+
+_RUNTIME = pytest.StashKey[_SessionRuntime]()
+_RUN_DIRECTORY = pytest.StashKey[_RunDirectory]()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -77,7 +110,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--offckb-source",
         action="store",
         default=os.environ.get("OFFCKB_SOURCE"),
-        help="OffCKB source checkout to pack; defaults to source/offckb or the sibling ../offckb checkout",
+        help="OffCKB source repository used by make prepare; defaults to source/offckb or ../offckb",
+    )
+    group.addoption(
+        "--offckb-ref", default=os.environ.get("OFFCKB_REF"),
+        help="latest npm release, Git branch/tag/commit or working-tree; defaults to config/offckb.toml",
+    )
+    group.addoption(
+        "--offckb-repo", default=os.environ.get("OFFCKB_REPO"),
+        help="Git repository URL; defaults to config/offckb.toml",
     )
     group.addoption(
         "--offckb-entry",
@@ -136,6 +177,80 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError("the first offckb core integration runner supports Linux and macOS only")
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
         raise pytest.UsageError("offckb integration tests own fixed devnet ports and cannot run under pytest-xdist")
+
+
+def _configured_target(config: pytest.Config) -> Target:
+    return target_settings(
+        source=config.getoption("--offckb-source"),
+        repo=config.getoption("--offckb-repo"),
+        ref=config.getoption("--offckb-ref"),
+    )
+
+
+def _target_description(config: pytest.Config) -> str:
+    try:
+        entry = config.getoption("--offckb-entry")
+        package = config.getoption("--offckb-package")
+        if entry and package:
+            return "OffCKB：--offckb-entry 和 --offckb-package 不能同时设置"
+        if entry:
+            return describe({"mode": "entry", "entry": entry})
+        if package:
+            return describe(package_info(Path(package).expanduser().resolve()))
+        return describe(load_prepared(_configured_target(config)))
+    except (ValueError, OSError, KeyError) as error:
+        return f"OffCKB 目标尚不可用：{error}（仅收集用例仍可执行）"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    config = session.config
+    terminal = config.pluginmanager.get_plugin("terminalreporter")
+    # Check mappings first, but display the report after the tested version.
+    root = Path(__file__).resolve().parents[1]
+    mapping = subprocess.run(
+        [sys.executable, str(root / "scripts" / "check_test_map.py")],
+        cwd=root, capture_output=True, text=True, timeout=30,
+    )
+    if mapping.returncode:
+        raise pytest.UsageError(f"TEST-MAP 检查失败：\n{mapping.stdout}{mapping.stderr}")
+    if config.option.collectonly:
+        if terminal is not None:
+            terminal.write_line(_target_description(session.config), bold=True)
+    else:
+        try:
+            config.stash[_RUNTIME] = _initialize_runtime(config)
+        except (ValueError, OSError, KeyError) as error:
+            raise pytest.UsageError(str(error)) from error
+    if terminal is not None:
+        terminal.write_line(mapping.stdout.rstrip())
+
+
+def _initialize_runtime(config: pytest.Config) -> _SessionRuntime:
+    integration_root = Path(__file__).resolve().parents[1]
+    product_root = _configured_target(config).source or integration_root / "source" / ".prepared"
+    ckb_binary = _resolve_ckb_binary(config, product_root)
+    root = Path(tempfile.mkdtemp(prefix="offckb-acceptance-"))
+    directory = _RunDirectory(root, keep=config.getoption("--keep-runtime"))
+    config.stash[_RUN_DIRECTORY] = directory
+    config.add_cleanup(directory.cleanup)
+    for name in ("home", "workspace", "commands", "secrets", "tmp"):
+        (root / name).mkdir()
+    env = _create_isolated_env(root, ckb_binary)
+    artifact = _prepare_offckb_artifact(config, product_root, env, root)
+    command = _resolve_offckb_command(config, artifact)
+    runner = _create_offckb_runner(command, artifact, artifact.daemon_entry, env, root, config)
+    return _SessionRuntime(root, product_root, ckb_binary, env, artifact, command, runner)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> Iterator[None]:
+    yield
+    directory = session.config.stash.get(_RUN_DIRECTORY, None)
+    if directory is not None:
+        directory.failed = session.testsfailed > 0 or exitstatus not in (
+            pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED,
+        )
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -263,40 +378,6 @@ def _resolve_pnpm(pytestconfig: pytest.Config) -> Path:
     return executable
 
 
-def _pack_offckb_source(
-    product_root: Path,
-    pnpm: Path,
-    *,
-    env: dict[str, str],
-    run_root: Path,
-) -> Path:
-    package_json = product_root / "package.json"
-    build_entry = product_root / "build" / "index.js"
-    if not package_json.is_file():
-        raise pytest.UsageError(
-            f"offckb source checkout does not exist at {product_root}; pass --offckb-source, populate source/offckb, "
-            "pass --offckb-package, or pass --offckb-entry"
-        )
-    if not build_entry.is_file():
-        raise pytest.UsageError(
-            f"offckb build entry does not exist at {build_entry}; run pnpm build in {product_root} first"
-        )
-
-    package_dir = run_root / "packages"
-    package_dir.mkdir(parents=True, exist_ok=True)
-    _run_artifact_command(
-        "pack",
-        (str(pnpm), "--ignore-workspace", "pack", "--pack-destination", str(package_dir)),
-        cwd=product_root,
-        env=env,
-        records_dir=run_root / "commands",
-    )
-    packages = sorted(package_dir.glob("*.tgz"))
-    if len(packages) != 1:
-        raise pytest.UsageError(f"pnpm pack produced {len(packages)} tarballs in {package_dir}: {packages}")
-    return packages[0].resolve()
-
-
 def _resolve_pnpm_store(
     pytestconfig: pytest.Config,
     pnpm: Path,
@@ -420,48 +501,12 @@ def integration_root() -> Path:
 
 @pytest.fixture(scope="session")
 def project_root(integration_root: Path, pytestconfig: pytest.Config) -> Path:
-    def is_offckb_checkout(path: Path) -> bool:
-        try:
-            manifest = json.loads((path / "package.json").read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return False
-        return isinstance(manifest, dict) and manifest.get("name") == "@offckb/cli"
-
-    configured = pytestconfig.getoption("--offckb-source")
-    if configured:
-        checkout = Path(configured).expanduser().resolve()
-        if not is_offckb_checkout(checkout):
-            raise pytest.UsageError(
-                f"--offckb-source must point to an @offckb/cli checkout: {checkout}"
-            )
-        return checkout
-
-    declared_checkout = integration_root / "source" / "offckb"
-    sibling_checkout = integration_root.parent / "offckb"
-    for candidate in (declared_checkout, sibling_checkout):
-        if is_offckb_checkout(candidate):
-            return candidate.resolve()
-    # Package/entry-only runs need no checkout. Source-mode validation happens
-    # in _pack_offckb_source so these independent artifact inputs remain usable.
-    return declared_checkout.resolve()
+    return pytestconfig.stash[_RUNTIME].product_root
 
 
 @pytest.fixture(scope="session")
-def run_root(
-    tmp_path_factory: pytest.TempPathFactory, pytestconfig: pytest.Config, request: pytest.FixtureRequest
-) -> Iterator[Path]:
-    root = tmp_path_factory.mktemp("offckb-acceptance")
-    for name in ("home", "workspace", "commands", "secrets", "tmp"):
-        (root / name).mkdir(parents=True, exist_ok=True)
-    yield root
-    keep = pytestconfig.getoption("--keep-runtime") or request.session.testsfailed > 0
-    if keep:
-        scrub_secret_artifacts(root)
-        terminal = pytestconfig.pluginmanager.get_plugin("terminalreporter")
-        if terminal is not None:
-            terminal.write_line(f"offckb isolated runtime kept at: {root}")
-    else:
-        shutil.rmtree(root, ignore_errors=True)
+def run_root(pytestconfig: pytest.Config) -> Path:
+    return pytestconfig.stash[_RUNTIME].root
 
 
 @pytest.fixture(scope="session")
@@ -486,7 +531,11 @@ def fixed_port_lease(run_root: Path) -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def isolated_env(run_root: Path, ckb_bin: Path) -> dict[str, str]:
+def isolated_env(pytestconfig: pytest.Config) -> dict[str, str]:
+    return pytestconfig.stash[_RUNTIME].env
+
+
+def _empty_user_env(run_root: Path) -> dict[str, str]:
     home = run_root / "home"
     env = _safe_runtime_env()
     env.update(
@@ -506,6 +555,12 @@ def isolated_env(run_root: Path, ckb_bin: Path) -> dict[str, str]:
         env["APPDATA"] = str(home / "AppData" / "Roaming")
         env["LOCALAPPDATA"] = str(home / "AppData" / "Local")
     env.pop("OFFCKB_PRIVATE_KEY", None)
+    return env
+
+
+def _create_isolated_env(run_root: Path, ckb_bin: Path) -> dict[str, str]:
+    env = _empty_user_env(run_root)
+    home = Path(env["HOME"])
 
     version_result = subprocess.run(
         [str(ckb_bin), "--version"],
@@ -572,7 +627,11 @@ def isolated_env(run_root: Path, ckb_bin: Path) -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def offckb_artifact(
+def offckb_artifact(pytestconfig: pytest.Config) -> OffckbArtifact:
+    return pytestconfig.stash[_RUNTIME].artifact
+
+
+def _prepare_offckb_artifact(
     pytestconfig: pytest.Config,
     project_root: Path,
     isolated_env: dict[str, str],
@@ -612,20 +671,26 @@ def offckb_artifact(
         artifact_env = dict(isolated_env)
         artifact_env["npm_config_ignore_scripts"] = "true"
         if configured_package:
-            package_path = Path(configured_package).expanduser().resolve()
-            if not package_path.is_file():
-                raise pytest.UsageError(f"offckb package does not exist: {package_path}")
-            source = f"explicit-package:{package_path}"
+            original_package = Path(configured_package).expanduser().resolve()
+            target_info = package_info(original_package)
+            source = f"explicit-package:{original_package}"
         else:
-            package_path = _pack_offckb_source(
-                project_root,
-                pnpm,
-                env=artifact_env,
-                run_root=run_root,
-            )
-            source = f"packed-source:{project_root}"
+            try:
+                target_info = load_prepared(_configured_target(pytestconfig))
+            except (ValueError, OSError, KeyError) as error:
+                raise pytest.UsageError(str(error)) from error
+            original_package = Path(target_info["package"])
+            revision = target_info.get("commit", target_info["version"])
+            source = f"prepared:{target_info['selection']['ref']}@{revision}"
+
+        package_dir = run_root / "packages"
+        package_dir.mkdir()
+        package_path = package_dir / "offckb-cli.tgz"
+        shutil.copy2(original_package, package_path)
 
         package_sha256 = _sha256_file(package_path)
+        if package_sha256 != target_info["sha256"]:
+            raise pytest.UsageError("OffCKB 包在复制期间发生变化，请重新运行 make prepare")
         _record_artifact_metadata(
             run_root,
             {
@@ -638,6 +703,7 @@ def offckb_artifact(
                 "packageSha256": package_sha256,
                 "productRoot": str(project_root) if (project_root / "package.json").is_file() else None,
                 "source": source,
+                "target": target_info,
             },
         )
 
@@ -668,6 +734,7 @@ def offckb_artifact(
             package_sha256=package_sha256,
             product_root=project_root if (project_root / "package.json").is_file() else None,
             install_prefix=prefix,
+            target_info=target_info,
         )
 
     artifact_record = {
@@ -680,6 +747,7 @@ def offckb_artifact(
         "packageSha256": artifact.package_sha256,
         "productRoot": str(artifact.product_root) if artifact.product_root else None,
         "source": artifact.source,
+        "target": artifact.target_info,
     }
     _record_artifact_metadata(run_root, artifact_record)
     return artifact
@@ -691,7 +759,11 @@ def offckb_entry(offckb_artifact: OffckbArtifact) -> Path:
 
 
 @pytest.fixture(scope="session")
-def ckb_bin(pytestconfig: pytest.Config, project_root: Path) -> Path:
+def ckb_bin(pytestconfig: pytest.Config) -> Path:
+    return pytestconfig.stash[_RUNTIME].ckb_binary
+
+
+def _resolve_ckb_binary(pytestconfig: pytest.Config, project_root: Path) -> Path:
     configured = pytestconfig.getoption("--ckb-bin")
     candidates = [Path(configured).expanduser()] if configured else [project_root.parent / "ckb" / "target" / "release" / "ckb"]
     binary = candidates[0].resolve()
@@ -703,7 +775,11 @@ def ckb_bin(pytestconfig: pytest.Config, project_root: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
-def offckb_command(pytestconfig: pytest.Config, offckb_artifact: OffckbArtifact) -> tuple[str, ...]:
+def offckb_command(pytestconfig: pytest.Config) -> tuple[str, ...]:
+    return pytestconfig.stash[_RUNTIME].command
+
+
+def _resolve_offckb_command(pytestconfig: pytest.Config, offckb_artifact: OffckbArtifact) -> tuple[str, ...]:
     command_entry = offckb_artifact.command_entry
     if command_entry.suffix.lower() in {".js", ".cjs", ".mjs"}:
         node_value = pytestconfig.getoption("--node-bin")
@@ -719,28 +795,37 @@ def offckb_command(pytestconfig: pytest.Config, offckb_artifact: OffckbArtifact)
 
 
 @pytest.fixture(scope="session")
-def offckb(
+def offckb(pytestconfig: pytest.Config) -> OffckbRunner:
+    return pytestconfig.stash[_RUNTIME].runner
+
+
+def _create_offckb_runner(
     offckb_command: tuple[str, ...],
     offckb_artifact: OffckbArtifact,
     offckb_entry: Path,
     isolated_env: dict[str, str],
     run_root: Path,
+    pytestconfig: pytest.Config,
 ) -> OffckbRunner:
     env = dict(isolated_env)
-    env["OFFCKB_CLI_PATH"] = str(offckb_entry)
-    version_result = subprocess.run(
+    version_result = _run_artifact_command(
+        "version",
         [*offckb_command, "--version"],
         cwd=run_root / "workspace",
         env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=15,
-        check=False,
+        records_dir=run_root / "commands",
+        timeout_s=15,
     )
-    if version_result.returncode != 0:
+    runtime_version = version_result.stdout.strip()
+    if not runtime_version or len(runtime_version.splitlines()) != 1:
         raise pytest.UsageError(
-            f"cannot execute offckb artifact {offckb_artifact.command_entry}: {version_result.stderr}"
+            f"offckb --version 未返回有效的单行版本号：{runtime_version!r}"
+        )
+    target_info = offckb_artifact.target_info
+    if target_info is not None and runtime_version != target_info["version"]:
+        raise pytest.UsageError(
+            f"OffCKB 版本不一致：offckb --version 返回 {runtime_version!r}，"
+            f"包内 package.json 为 {target_info['version']!r}；停止测试。"
         )
     manifest_path = run_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -751,18 +836,26 @@ def offckb(
             "offckbCommandEntry": str(offckb_artifact.command_entry),
             "offckbCommandEntrySha256": _sha256_file(offckb_artifact.command_entry),
             "offckbEntry": str(offckb_entry),
-            "offckbVersion": version_result.stdout.strip(),
+            "offckbVersion": runtime_version,
             "offckbSha256": _sha256_file(offckb_entry),
             "offckbInstallPrefix": str(offckb_artifact.install_prefix) if offckb_artifact.install_prefix else None,
             "offckbPackage": str(offckb_artifact.package_path) if offckb_artifact.package_path else None,
             "offckbPackageSha256": offckb_artifact.package_sha256,
             "offckbProductRoot": str(offckb_artifact.product_root) if offckb_artifact.product_root else None,
+            "offckbTarget": offckb_artifact.target_info,
             "nodeBinary": offckb_command[0] if len(offckb_command) > 1 else None,
         }
     )
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    terminal = pytestconfig.pluginmanager.get_plugin("terminalreporter")
+    if terminal is not None:
+        terminal.write_line(describe(
+            target_info or {"mode": "entry", "entry": str(offckb_artifact.command_entry)},
+            runtime_version=runtime_version,
+        ), bold=True)
     return OffckbRunner(
         offckb_command,
+        cli_entry=offckb_entry,
         env=env,
         cwd=run_root / "workspace",
         records_dir=run_root / "commands",
@@ -804,6 +897,39 @@ def devnet_manager(
 @pytest.fixture
 def devnet(devnet_manager: DevnetManager) -> DevnetManager:
     return devnet_manager.ensure_running()
+
+
+@pytest.fixture
+def uninitialized_devnet(
+    devnet_manager: DevnetManager,
+    offckb: OffckbRunner,
+    run_root: Path,
+    ckb_bin: Path,
+    pytestconfig: pytest.Config,
+) -> Iterator[DevnetManager]:
+    """A first launch with no settings, managed binary, or earlier CLI invocation."""
+    devnet_manager.close()
+    root = run_root / "first-launch"
+    for directory in ("home", "workspace", "commands", "tmp"):
+        (root / directory).mkdir(parents=True)
+    runner = OffckbRunner(
+        offckb.command,
+        cli_entry=offckb.cli_entry,
+        env=_empty_user_env(root),
+        cwd=root / "workspace",
+        records_dir=root / "commands",
+    )
+    manager = DevnetManager(
+        runner,
+        RpcClient(DIRECT_RPC_URL),
+        RpcClient(PROXY_RPC_URL),
+        ckb_bin,
+        startup_timeout_s=pytestconfig.getoption("--startup-timeout"),
+    )
+    try:
+        yield manager
+    finally:
+        manager.close()
 
 
 @pytest.fixture

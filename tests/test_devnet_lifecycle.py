@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from .harness import DEVNET_PORTS, DevnetManager, OffckbRunner, RpcClient, is_port_open, wait_until
+from .harness import (
+    DEVNET_PORTS, DevnetManager, OffckbRunner, RpcClient,
+    _command_references_path, _process_group_commands, is_port_open, wait_until,
+)
 
 
 pytestmark = [pytest.mark.core]
@@ -45,8 +48,11 @@ def _process_alive(process_id: int) -> bool:
 
 
 # TEST-MAP: NODE-01
-def test_fresh_daemon_initializes_and_becomes_ready(fresh_devnet: DevnetManager, rpc: RpcClient) -> None:
-    result = fresh_devnet.start_result
+def test_fresh_daemon_initializes_and_becomes_ready(uninitialized_devnet: DevnetManager) -> None:
+    devnet = uninitialized_devnet
+    assert not list(Path(devnet.runner.env["HOME"]).iterdir())
+    assert "OFFCKB_CLI_PATH" not in devnet.runner.env
+    result = devnet.start()
     assert result is not None
     assert result["ok"] is True
     assert result["command"] == "node"
@@ -63,13 +69,22 @@ def test_fresh_daemon_initializes_and_becomes_ready(fresh_devnet: DevnetManager,
     assert metadata["pid"] == result["pid"]
     assert metadata["status"] == "running"
 
-    config_path = fresh_devnet.config_path
+    config_path = devnet.config_path
     assert config_path is not None
     assert (config_path / "ckb.toml").is_file()
     assert (config_path / "ckb-miner.toml").is_file()
     assert (config_path / "specs" / "dev.toml").is_file()
-    assert rpc.ready()
+    assert devnet.rpc.ready()
     assert all(is_port_open(port) for port in DEVNET_PORTS)
+    assert devnet.pgid is not None
+    commands = _process_group_commands(devnet.pgid)
+    for component in ("run", "miner"):
+        assert any(
+            _command_references_path(command, devnet.ckb_bin)
+            and _command_references_path(command, config_path)
+            and component in command.split()
+            for command in commands.values()
+        ), f"{component} did not use the requested --binary-path: {commands}"
 
 
 # TEST-MAP: NODE-02

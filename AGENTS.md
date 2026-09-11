@@ -15,7 +15,8 @@
 - 源码仓库：`https://github.com/ckb-devrel/offckb.git`
 - 本地源码选择：`--offckb-source` / `OFFCKB_SOURCE` 显式指定优先，其次 `source/offckb/`，最后同级 `../offckb/`。
 - 测试工程独立于产品仓库，禁止将本机源码链接、Python 虚拟环境、CKB 二进制或运行产物提交到测试仓库。
-- 默认版本：`develop`
+- 默认版本：`config/offckb.toml` 中的 `latest`，对应 npm 上最新发布的 `@offckb/cli`；设为 `develop` 可测试官方开发分支，`OFFCKB_REPO` / `OFFCKB_REF` 可覆盖源码仓库和版本选择。
+- `make prepare` 下载并校验最新发布包，或将所选 Git 版本解析为 commit 并构建发布包；`make test` 校验并使用已准备的包。`latest` 不要求源码；源码模式下源码目录只用于复用 Git 对象，不隐式决定被测分支；只有显式 `working-tree` 才包含本地未提交修改。
 - 被测对象：打包后的 `@offckb/cli`、其 `offckb` 可执行程序、由它管理的 CKB node/miner/RPC proxy、生成的项目文件、持久化 OffCKB 状态以及产生的链上交易和 cell。
 - 稳定入口：`offckb --json ...`、direct CKB JSON-RPC、OffCKB RPC proxy，以及独立 OffCKB config/data/cache 根目录下的文件。
 - 参考资料：`source/offckb/README.md`、`source/offckb/docs/develop.md`、`source/offckb/package.json`、`source/offckb/src/cli.ts`，以及 `source/offckb/templates/`、`source/offckb/ckb/devnet/` 中随包发布的模板和配置。
@@ -24,7 +25,7 @@
 
 ### 黑盒边界
 
-- 构建源码、生成 npm 包，并调用安装后的 `offckb` 可执行程序。集成测试不得导入 `src/` 内部模块。
+- 下载已发布 npm 包或从所选源码构建 npm 包，并调用安装后的 `offckb` 可执行程序。集成测试不得导入 `src/` 内部模块。
 - 只把 CLI 退出码、stdout、stderr、RPC 响应、文件、进程生命周期和已确认的链上状态作为观察结果。
 - JSON 模式下，stdout 必须只有一个命令结果 JSON；进度通过 stderr 输出 NDJSON；失败必须结构化并返回非零退出码。
 - 返回交易哈希不代表成功。必须轮询 `get_transaction`，直到交易 committed 或 rejected。

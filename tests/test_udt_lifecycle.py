@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from .asset_assertions import assert_udt_balance
+
 
 HEX32_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
 
@@ -43,13 +45,6 @@ def _issuer_type_args(rpc: Any, account: Any) -> str:
     type_args = rpc.script_hash(account.lock_script)
     assert isinstance(type_args, str) and HEX32_RE.fullmatch(type_args), type_args
     return type_args.lower()
-
-
-def _udt_balance(rpc: Any, account: Any, kind: str, type_args: str) -> int:
-    balance = rpc.udt_balance(account.lock_script, kind, type_args)
-    assert isinstance(balance, int) and not isinstance(balance, bool), balance
-    assert balance >= 0, balance
-    return balance
 
 
 def _script(script: Mapping[str, Any]) -> dict[str, str]:
@@ -176,14 +171,16 @@ def _assert_issue_transaction(
         and isinstance((type_script := output.get("type")), Mapping)
         and _script(type_script)["args"] == type_args
     ]
-    assert len(candidates) == 1, {
+    assert candidates and all(candidate == candidates[0] for candidate in candidates), {
         "typeArgs": type_args,
         "candidateTypes": candidates,
         "transaction": transaction,
     }
     target_type = candidates[0]
-    assert _target_input_total(rpc, transaction_result, target_type) == 0
-    assert _target_outputs(transaction_result, target_type) == [(_script(receiver_lock), amount)]
+    inputs_total = _target_input_total(rpc, transaction_result, target_type)
+    outputs = _target_outputs(transaction_result, target_type)
+    assert all(lock == _script(receiver_lock) for lock, _ in outputs), outputs
+    assert sum(value for _, value in outputs) - inputs_total == amount, outputs
     return target_type
 
 
@@ -265,7 +262,7 @@ def test_issue_sudt_uses_issuer_lock_hash(
     rpc.wait_indexer()
     amount = 10_000
     expected_type_args = _issuer_type_args(rpc, issuer)
-    balance_before = _udt_balance(rpc, issuer, "sudt", expected_type_args)
+    balance_before = assert_udt_balance(offckb, rpc, issuer, "sudt", expected_type_args)
 
     payload = _issue(
         offckb,
@@ -289,7 +286,7 @@ def test_issue_sudt_uses_issuer_lock_hash(
         amount=amount,
     )
 
-    assert _udt_balance(rpc, issuer, "sudt", expected_type_args) == balance_before + amount
+    assert assert_udt_balance(offckb, rpc, issuer, "sudt", expected_type_args) == balance_before + amount
 
 
 # TEST-MAP: UDT-02
@@ -303,9 +300,13 @@ def test_issue_xudt_preserves_type_args_and_kind(
     issuer = accounts[0]
     rpc.wait_indexer()
     amount = 20_000
-    type_args = _issuer_type_args(rpc, issuer)
-    xudt_before = _udt_balance(rpc, issuer, "xudt", type_args)
-    sudt_before = _udt_balance(rpc, issuer, "sudt", type_args)
+    default_args = _issuer_type_args(rpc, issuer)
+    # RFC 0052: zero flags need no extension data and preserve input-lock ownership.
+    type_args = default_args + "00000000"
+    assert type_args != default_args
+    xudt_before = assert_udt_balance(offckb, rpc, issuer, "xudt", type_args)
+    default_xudt_before = assert_udt_balance(offckb, rpc, issuer, "xudt", default_args)
+    sudt_before = assert_udt_balance(offckb, rpc, issuer, "sudt", default_args)
 
     payload = _issue(
         offckb,
@@ -330,8 +331,9 @@ def test_issue_xudt_preserves_type_args_and_kind(
         amount=amount,
     )
 
-    assert _udt_balance(rpc, issuer, "xudt", type_args) == xudt_before + amount
-    assert _udt_balance(rpc, issuer, "sudt", type_args) == sudt_before
+    assert assert_udt_balance(offckb, rpc, issuer, "xudt", type_args) == xudt_before + amount
+    assert assert_udt_balance(offckb, rpc, issuer, "xudt", default_args) == default_xudt_before
+    assert assert_udt_balance(offckb, rpc, issuer, "sudt", default_args) == sudt_before
 
 
 # TEST-MAP: UDT-03
@@ -350,8 +352,8 @@ def test_transfer_udt_preserves_amount_and_type(
     issued_amount = 30_000
     transfer_amount = 7_500
     type_args = _issuer_type_args(rpc, sender)
-    sender_before = _udt_balance(rpc, sender, kind, type_args)
-    receiver_before = _udt_balance(rpc, receiver, kind, type_args)
+    sender_before = assert_udt_balance(offckb, rpc, sender, kind, type_args)
+    receiver_before = assert_udt_balance(offckb, rpc, receiver, kind, type_args)
 
     issue_payload = _issue(
         offckb,
@@ -368,8 +370,8 @@ def test_transfer_udt_preserves_amount_and_type(
         type_args=type_args,
         amount=issued_amount,
     )
-    sender_after_issue = _udt_balance(rpc, sender, kind, type_args)
-    receiver_after_issue = _udt_balance(rpc, receiver, kind, type_args)
+    sender_after_issue = assert_udt_balance(offckb, rpc, sender, kind, type_args)
+    receiver_after_issue = assert_udt_balance(offckb, rpc, receiver, kind, type_args)
     assert sender_after_issue == sender_before + issued_amount
     assert receiver_after_issue == receiver_before
 
@@ -405,8 +407,8 @@ def test_transfer_udt_preserves_amount_and_type(
         amount=transfer_amount,
     )
 
-    sender_after = _udt_balance(rpc, sender, kind, type_args)
-    receiver_after = _udt_balance(rpc, receiver, kind, type_args)
+    sender_after = assert_udt_balance(offckb, rpc, sender, kind, type_args)
+    receiver_after = assert_udt_balance(offckb, rpc, receiver, kind, type_args)
     assert sender_after == sender_after_issue - transfer_amount
     assert receiver_after == receiver_after_issue + transfer_amount
     assert sender_after + receiver_after == sender_after_issue + receiver_after_issue
@@ -427,8 +429,8 @@ def test_destroy_partial_udt_keeps_exact_change(
     issued_amount = 40_000
     destroy_amount = 9_000
     type_args = _issuer_type_args(rpc, holder)
-    holder_before = _udt_balance(rpc, holder, kind, type_args)
-    other_before = _udt_balance(rpc, other, kind, type_args)
+    holder_before = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    other_before = assert_udt_balance(offckb, rpc, other, kind, type_args)
 
     issue_payload = _issue(
         offckb,
@@ -445,7 +447,7 @@ def test_destroy_partial_udt_keeps_exact_change(
         type_args=type_args,
         amount=issued_amount,
     )
-    holder_after_issue = _udt_balance(rpc, holder, kind, type_args)
+    holder_after_issue = assert_udt_balance(offckb, rpc, holder, kind, type_args)
     assert holder_after_issue == holder_before + issued_amount
 
     result = offckb.run(
@@ -479,8 +481,8 @@ def test_destroy_partial_udt_keeps_exact_change(
         amount=destroy_amount,
     )
 
-    holder_after = _udt_balance(rpc, holder, kind, type_args)
-    other_after = _udt_balance(rpc, other, kind, type_args)
+    holder_after = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    other_after = assert_udt_balance(offckb, rpc, other, kind, type_args)
     assert holder_after == holder_after_issue - destroy_amount
     assert other_after == other_before
     assert holder_after + other_after == holder_after_issue + other_before - destroy_amount
