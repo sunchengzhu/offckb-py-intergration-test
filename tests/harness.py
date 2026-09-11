@@ -45,6 +45,20 @@ def camel_script(script: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def dep_group_members(data: str) -> list[dict[str, str]]:
+    encoded = bytes.fromhex(data.removeprefix("0x"))
+    assert len(encoded) >= 4, "dep group is missing its OutPointVec count"
+    count = struct.unpack_from("<I", encoded)[0]
+    assert count > 0 and len(encoded) == 4 + count * 36, "invalid dep group OutPointVec"
+    return [
+        {
+            "tx_hash": "0x" + encoded[offset:offset + 32].hex(),
+            "index": hex(struct.unpack_from("<I", encoded, offset + 32)[0]),
+        }
+        for offset in range(4, len(encoded), 36)
+    ]
+
+
 def is_port_open(port: int, host: str = "127.0.0.1") -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.25)
@@ -367,6 +381,11 @@ class RpcClient:
 
     def configure_udt_scripts(self, scripts: Mapping[str, Mapping[str, str]]) -> None:
         self._udt_scripts = {kind: rpc_script(script) for kind, script in scripts.items()}
+
+    def udt_script(self, kind: str) -> dict[str, str]:
+        """The script resolved independently from the running chain's CKB config."""
+        assert kind in self._udt_scripts, f"effective {kind} script is not loaded"
+        return dict(self._udt_scripts[kind])
 
     def call(self, method: str, params: Sequence[Any] = ()) -> Any:
         self._request_id += 1

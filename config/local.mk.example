@@ -11,7 +11,7 @@ CKB_BIN ?= /absolute/path/to/ckb
 # CKB_BIN 已是该版本时可省略；否则另行指定，不会改变 OffCKB 的默认设置。
 # DEFAULT_CKB_BIN ?= /absolute/path/to/package-default-ckb/ckb
 
-# 项目创建、构建和运行用例需要原生 ckb-debugger；未设置时从 PATH 查找。
+# 项目创建、构建、运行及合约调试、日志用例需要原生 ckb-debugger；未设置时从 PATH 查找。
 # CKB_DEBUGGER_BIN ?= /absolute/path/to/ckb-debugger
 
 # latest 不需要源码；源码模式查找 source/offckb/、../offckb/，其他位置才需设置。
