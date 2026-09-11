@@ -1,3 +1,4 @@
 - model: unavailable | cases: Gate 1 文档语言 | feedback: 能写中文吗 这样有利于我的阅读
 - model: GPT-5 | cases: 首期实现范围、OBS-01 至 OBS-05 | feedback: 优先做核心流程吧
 - model: unavailable | cases: 全工程测试范围 | feedback: 你能帮我review一下现有用例吗 其实是要测offckb框架功能 而不是ckb本身的功能 别聚焦错了 这块很重要 可以多花点token做
+- model: unavailable | cases: 全工程用户场景、优先级与文档表达 | feedback: 好的 我觉得应该更贴近普通用户的使用场景 不是为了测试而测试 普通用户更想利用offckb去快速上手ckb的功能 你再完善一下用例场景文档吧（不是代码哦）

@@ -214,6 +214,7 @@ def test_deploy_immutable_contract(
     private_key_file: Any,
     tmp_path: Path,
 ) -> None:
+    """用户用所选账户部署已有合约，拿到与链上内容一致的部署记录。"""
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "immutable-contract.bin", _IMMUTABLE_CONTRACT)
     output = tmp_path / "deployment"
@@ -250,6 +251,7 @@ def test_first_type_id_deployment(
     private_key_file: Any,
     tmp_path: Path,
 ) -> None:
+    """用户为后续升级首次发布合约，得到可复用的 Type ID。"""
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "type-id-contract.bin", _TYPE_ID_CONTRACT_V1)
     output = tmp_path / "deployment"
@@ -289,6 +291,7 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
     private_key_file: Any,
     tmp_path: Path,
 ) -> None:
+    """用户修改合约后沿用原部署目录升级，同时保留旧部署记录。"""
     rpc.wait_indexer()
     contract = _write_contract(tmp_path / "upgradable-contract.bin", _TYPE_ID_CONTRACT_V1)
     output = tmp_path / "deployment"
@@ -298,6 +301,7 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
     _run_deploy(offckb, contract, output, key_file, type_id=True)
     old_migrations = _migration_files(output, contract.name)
     assert len(old_migrations) == 1
+    old_migration_contents = {path: path.read_bytes() for path in old_migrations}
     old_recipe = _read_migration(old_migrations[0], contract.name)
     _wait_committed(rpc, old_recipe["tx_hash"])
     old_cell = _assert_live_code_cell(rpc, old_recipe, _TYPE_ID_CONTRACT_V1)
@@ -312,6 +316,8 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
     _run_deploy(offckb, contract, output, key_file, type_id=True)
 
     new_migrations = _migration_files(output, contract.name)
+    for path, original in old_migration_contents.items():
+        assert path.read_bytes() == original, f"upgrade overwrote an existing deployment record: {path}"
     added_migrations = set(new_migrations) - set(old_migrations)
     assert len(new_migrations) == len(old_migrations) + 1
     assert len(added_migrations) == 1

@@ -1,30 +1,52 @@
-# offckb 测试域地图
+# OffCKB 用户场景用例评审
 
-分析依据：本地 `develop` 分支提交 `44ab81d`，重点参考 `package.json`、`src/cli.ts`、`src/util/logger.ts`、`src/cmd/node.ts`、`src/cfg/setting.ts`、`README.md` 和 `.github/workflows/test.yml`。
+接口依据：`@offckb/cli@0.4.13`（`1551ef9`）及开发版 `0.5.0`（`b03577c`）中已核对的 CLI 和入门流程。各领域文档注明具体依据；这里不表示全部场景已经自动化或执行通过。
 
-本文件帮助评审者找到各测试域对应的评审文档，不记录批准状态或自动化状态。首期只覆盖最重要的本地、非交互式黑盒主流程。
+## 要帮助用户完成什么
 
-首期实现顺序以真实用户价值闭环为准：devnet 启停与就绪、账户和 CKB 流转、SUDT/xUDT 生命周期、合约部署与 Type-ID 升级，然后再覆盖项目脚手架。RPC proxy 在首期仅作为 devnet 的必要依赖接受健康检查，不单独冻结其日志、交易缓存和异常转发细节。
+普通用户希望借助 OffCKB 快速启动一个 CKB 开发环境，拿到可用账户，尝试交易和代币，创建自己的合约并完成构建、部署、调用和调试，最后能保存进度或重置环境重新实验。
 
-| 测试域 | 负责行为 | 范围边界 | 入口 | 可观察结果 | 计划评审文档 |
-| --- | --- | --- | --- | --- | --- |
-| CLI 契约 | 验证构建并打包后的 CLI 可以安装、启动、拒绝非法输入，并保持机器输出契约稳定 | 只测试发布产物；不导入 `src/`，不检查帮助文案的排版细节 | `offckb --version`、`--help`、全局 `--json`、非法命令和参数 | 退出码；stdout 只有一个成功 JSON 对象；stderr 输出 NDJSON 进度或结构化失败；错误不重复 | `reviews/cli/command-contract.md` |
-| Devnet 生命周期与状态 | 验证全新初始化、daemon 就绪、重启、停止、清理和基础持久化 | 每次使用独立用户目录和预先指定的本地 CKB 二进制；固定端口要求串行执行；不覆盖公共网络和 TTY | `node --daemon --binary-path`、`node stop`、`devnet info --json`、`clean`、`clean -d`、direct/proxy RPC | 配置、PID 和日志文件；direct/proxy RPC 健康；tip 持续增长且 Indexer 追平；重启前后 genesis 不变；停止后端口释放；两种清理边界正确 | `reviews/devnet/lifecycle-state.md` |
-| 账户与 CKB 价值流转 | 验证内置开发账户、余额查询、充值、转账及真实链上效果 | 只覆盖本地纯 devnet；私钥通过文件或环境变量传入；不覆盖公共 faucet | `accounts --json`、`balance --no-udt --json`、`deposit --json`、`transfer --json`、`transfer-all --json` | 默认不暴露私钥；地址和初始资金正确；交易哈希有效并最终 committed；余额和 cell 按预期变化 | `reviews/accounts/ckb-value-flow.md` |
-| UDT 生命周期 | 验证支持的 SUDT/xUDT 发行、查询、转移和销毁闭环 | 使用本地 devnet 内置脚本；不覆盖压力和资源上限场景 | `udt issue`、UDT 余额查询、UDT `transfer`、`udt destroy`，全部使用 JSON 模式 | 交易 committed；kind、type args 和 receiver 正确；转移前后代币数量守恒；销毁后余额正确减少 | `reviews/tokens/udt-lifecycle.md` |
-| 合约部署 | 验证普通部署以及 Type-ID 创建和升级 | 使用小型、确定性的 devnet 二进制 fixture；不重新构建仓库内置 Rust/C 合约子模块 | `deploy --yes --target --output`、direct CKB RPC | 部署交易 committed；部署记录生成且与链上 cell/data hash 一致；升级保持 Type ID 并消费旧 cell | `reviews/contracts/deployment.md` |
-| 项目脚手架 | 验证从非交互创建项目到构建、部署和生成 devnet 测试的核心用户旅程 | 首期只使用 TypeScript 模板和临时 npm prefix；不做全局安装 | `create --no-interactive --no-git --no-install -l typescript` 及生成项目的 package scripts | 必需文件齐全；依赖可在沙箱内安装；项目能够构建；合约能够部署；生成的 devnet 测试能够运行 | `reviews/projects/scaffolding.md` |
-| RPC 代理与日志 | 后续验证基本转发、交易捕获和有限范围的诊断日志读取 | 首期只随 devnet 启动检查 proxy 健康；独立 proxy 语义与日志诊断延后 | Proxy JSON-RPC；`logs node\|miner\|rpc --tail --grep` | Proxy 与 direct RPC 结果一致；request/error/transaction 事件被记录；交易数据被缓存；过滤正确且控制字符不能注入日志 | `reviews/observability/rpc-proxy-logs.md` |
+评审每条用例时先看三个问题：用户正在做什么、OffCKB 应替他完成什么、用户如何知道这件事成功了。退出码、PID、文件和 RPC 是验证结果的依据；它们本身不决定场景的优先级。
 
-## 首期暂不覆盖
+## 按使用流程阅读
 
-- 完整历史版本矩阵和完整 Mainnet/Testnet 数据库 fork 属于慢速或发布套件。
-- CKB/debugger 下载、公共 RPC、testnet faucet 以及 npm/GitHub 可用性属于网络套件，不作为普通 PR 门禁。
-- `status` 和全屏 `devnet config` 编辑器需要 PTY 冒烟测试，并保留人工视觉和键盘交互验收。
-- Linux 功能门禁稳定后再加入 macOS、Windows 路径和进程兼容矩阵。
-- RPC proxy 的独立转发、交易缓存、错误恢复和日志过滤用例放入后续可观测性批次；首期不把它们设为发布门禁。
-- Jest 已负责的纯函数、模拟分支和 TUI 状态逻辑不在此重复。
+以下是阅读导航，详细场景、唯一用例 ID 和优先级仍只保存在各领域主表，不另建覆盖映射表。使用账户和尝试代币是一条入门路线，创建合约项目是另一条；两者都依赖可用的本地开发链，不要求用户完成所有步骤才能开始开发。
 
-本工程的评审文档路径：
+| 用户想完成的事情 | 应得到的结果 | 评审文档 |
+| --- | --- | --- |
+| 启动本地开发链，开始尝试 CKB | 使用默认配置启动；知道连接地址；节点、产块和查询可用；可在前台运行，也可选择后台运行 | [开发链启停与状态](devnet/lifecycle-state.md) |
+| 找一个有测试资金的账户，做第一笔交易 | 看到账户及余额，给自己的地址充值，指定发送账户和金额后能确认到账 | [账户与 CKB 转账](accounts/ckb-value-flow.md) |
+| 创建自己的第一个合约项目 | 默认示例可直接使用；自己的项目名和合约名正确；误选已有目录不会覆盖原代码 | [项目创建与运行](projects/scaffolding.md) |
+| 构建、部署并调用合约 | 按生成项目的说明完成构建和部署，运行示例测试能真正调用本次部署的合约；已有二进制也可直接部署 | [项目创建与运行](projects/scaffolding.md)、[合约部署与升级](contracts/deployment.md) |
+| 使用现成脚本尝试自己的交易 | 从 OffCKB 获取当前 devnet 的内置脚本和依赖，直接用于交易或 SDK 配置 | [发现与使用内置脚本](contracts/system-scripts.md) |
+| 发行并转移自己的测试代币 | 发行后能在余额中找到该资产，发给另一个账户后双方数量更新；进一步可尝试销毁 | [代币发行与使用](tokens/udt-lifecycle.md) |
+| 合约交易失败，找到原因 | 用交易哈希直接调试，查看对应脚本输出；通过日志找到本次操作，无需手工拼装调试文件 | [合约交易调试](contracts/debugging.md)、[连接与日志排障](observability/rpc-proxy-logs.md) |
+| 调整开发环境并继续使用 | 选择 CKB 版本后下次启动生效；调整日志配置后能看到相应变化 | [全局设置](configuration/global-settings.md)、[Devnet 配置](devnet/configuration.md) |
+| 结束工作后继续，或重新开始实验 | 停止后可重启并保留交易和配置；重置链数据时保留配置，完整重置时不误删项目文件 | [开发链启停与状态](devnet/lifecycle-state.md) |
+| 查找命令用法，或将命令接入脚本 | 帮助能找到入口，版本明确，成功与失败可判定，机器输出可解析 | [CLI 使用与输出](cli/command-contract.md) |
 
-- `reviews/<area>/<interface-or-behavior>.md`
+## 优先级与补齐顺序
+
+- **P0**：OffCKB 的主要上手和开发流程；无法完成会使用户无法开始或继续开发，或者普通操作会覆盖已有项目、丢失已保存的开发状态。
+- **P1**：进阶选项、常见错误后的恢复，以及需要特定异常条件才触发的保护。低频 PID 异常、损坏配置、日志注入和参数组合不先于完整入门流程。
+- 优先级与执行环境分开：构建、部署、调用和调试不能因为需要工具链就排到异常矩阵之后；网络下载和交互界面仍使用专门环境验收。
+
+接下来先把默认启动、默认项目创建及生成项目的构建—部署—调用串起来，同时保留已有账户、转账和代币主流程的回归。然后补齐内置脚本的使用、按交易哈希调试和基本日志排障，再补正常停止、继续开发、配置调整与重置中的缺口。重复启动、端口占用、错误 PID 等异常保护随后补齐。
+
+补齐工作以完整的用户路线为单位：先让一条路线可用，再扩展其他路线和异常场景。
+
+## 如何验证，避免偏离产品目标
+
+- 默认选项也要被验证。基础 `offckb node` 前台启动、正常中断，以及创建时使用默认示例和自动安装依赖，不能都被测试专用覆盖参数替代。
+- 为自动化选择 daemon 是运行安排，不代表普通用户必须使用 daemon。正常停止需要确认组件退出，PID 和端口是辅助证据；不把 PID 格式检查当成独立的用户价值。
+- 保留准确的结果验证：指定的账户、金额、资产标识、部署目录和合约版本必须实际生效。不能因为改用用户语言，就删掉链上确认、CLI 余额与部署记录之间的核对。
+- 交易和 cell 用来证明 OffCKB 把用户操作完成了，不扩展成 CKB 共识、脚本规则或协议上限的矩阵。典型合约失败用来验收 OffCKB 调试流程，不验证 debugger 的全部虚拟机语义。
+- 默认文本输出要能帮助用户完成操作；成功退出码和失败退出码随业务场景检查。通用 JSON 格式、选项位置等接口兼容性保留独立补充用例。
+
+## 执行与版本边界
+
+- 所有用户目录、项目、密钥、进程及保护对象都是测试拥有的临时数据，不使用开发者真实环境。默认工具路径的场景在隔离目录预备真实工具，其余核心节点场景可用 `--binary-path`。
+- 离线准备好 CKB/debugger 和依赖后验证产品使用流程，不等于已覆盖首次下载。下载流程、公共网络/faucet、完整数据库 fork 和长期版本矩阵使用明确 marker，不加入默认离线门禁。
+- 创建主线保留默认安装依赖和 Git 初始化；`--no-install`、`--no-git` 是用户主动跳过步骤的另一场景。`--no-install` 仍会检查 CKB/debugger，不代表完全离线。
+- 初期以 TypeScript 模板和准备完整的工具链验证创建、构建、部署、调用与调试；交互问答、TUI、其他语言及操作系统兼容矩阵分开补充。非交互执行只固定用户选择，不代表已验证交互界面。
+- 运行中清理、损坏设置修改和全额销毁代币的产品歧义保留在对应文档的“本轮需要确认”中；它们不阻塞其他已明确的正常使用场景评审。

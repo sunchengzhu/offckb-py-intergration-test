@@ -258,7 +258,8 @@ def test_issue_sudt_uses_issuer_lock_hash(
     accounts: list[Any],
     private_key_file: Any,
 ) -> None:
-    issuer = accounts[0]
+    """用户用自己选择的开发账户发行 SUDT，并在余额查询中找到它。"""
+    issuer = accounts[2]
     rpc.wait_indexer()
     amount = 10_000
     expected_type_args = _issuer_type_args(rpc, issuer)
@@ -297,7 +298,8 @@ def test_issue_xudt_preserves_type_args_and_kind(
     accounts: list[Any],
     private_key_file: Any,
 ) -> None:
-    issuer = accounts[0]
+    """用户发行指定标识的 xUDT，并查询到完整标识和正确数量。"""
+    issuer = accounts[3]
     rpc.wait_indexer()
     amount = 20_000
     default_args = _issuer_type_args(rpc, issuer)
@@ -346,7 +348,8 @@ def test_transfer_udt_preserves_amount_and_type(
     private_key_file: Any,
     kind: str,
 ) -> None:
-    sender, receiver = accounts[:2]
+    """用户转出部分代币后，双方都能查询到准确的余额变化。"""
+    sender, receiver = accounts[4], accounts[5]
     rpc.wait_indexer()
     assert sender.address != receiver.address
     issued_amount = 30_000
@@ -424,9 +427,11 @@ def test_destroy_partial_udt_keeps_exact_change(
     private_key_file: Any,
     kind: str,
 ) -> None:
-    holder, other = accounts[:2]
+    """用户销毁自己的部分代币，同时保留另一持有者已有的代币。"""
+    holder, other = accounts[10], accounts[11]
     rpc.wait_indexer()
     issued_amount = 40_000
+    other_amount = 2_000
     destroy_amount = 9_000
     type_args = _issuer_type_args(rpc, holder)
     holder_before = assert_udt_balance(offckb, rpc, holder, kind, type_args)
@@ -449,6 +454,35 @@ def test_destroy_partial_udt_keeps_exact_change(
     )
     holder_after_issue = assert_udt_balance(offckb, rpc, holder, kind, type_args)
     assert holder_after_issue == holder_before + issued_amount
+
+    transfer_payload = _json_result(offckb.run(
+        "transfer",
+        other.address,
+        str(other_amount),
+        "--network",
+        "devnet",
+        "--udt-kind",
+        kind,
+        "--udt-type-args",
+        type_args,
+        "--privkey-file",
+        str(private_key_file(holder)),
+        check=True,
+    ))
+    transfer_transaction = _wait_committed_and_indexed(rpc, _tx_hash(transfer_payload))
+    _assert_transfer_transaction(
+        rpc,
+        transfer_transaction,
+        target_type=target_type,
+        sender_lock=holder.lock_script,
+        receiver_lock=other.lock_script,
+        amount=other_amount,
+    )
+    holder_before_destroy = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    other_before_destroy = assert_udt_balance(offckb, rpc, other, kind, type_args)
+    assert holder_before_destroy == holder_after_issue - other_amount
+    assert other_before_destroy == other_before + other_amount
+    assert other_before_destroy > 0
 
     result = offckb.run(
         "udt",
@@ -477,12 +511,12 @@ def test_destroy_partial_udt_keeps_exact_change(
         destroy_transaction,
         target_type=target_type,
         holder_lock=holder.lock_script,
-        balance_before=holder_after_issue,
+        balance_before=holder_before_destroy,
         amount=destroy_amount,
     )
 
     holder_after = assert_udt_balance(offckb, rpc, holder, kind, type_args)
     other_after = assert_udt_balance(offckb, rpc, other, kind, type_args)
-    assert holder_after == holder_after_issue - destroy_amount
-    assert other_after == other_before
-    assert holder_after + other_after == holder_after_issue + other_before - destroy_amount
+    assert holder_after == holder_before_destroy - destroy_amount
+    assert other_after == other_before_destroy
+    assert holder_after + other_after == holder_before_destroy + other_before_destroy - destroy_amount
