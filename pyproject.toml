@@ -20,5 +20,5 @@ packages = []
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
-  "core: release-blocking local devnet user flows",
+  "core: local devnet user-flow regressions, independent of review priority",
 ]

@@ -49,6 +49,7 @@ def _process_alive(process_id: int) -> bool:
 
 # TEST-MAP: NODE-01
 def test_fresh_daemon_initializes_and_becomes_ready(uninitialized_devnet: DevnetManager) -> None:
+    """用户首次后台启动开发链，无需先手工生成配置即可连接使用。"""
     devnet = uninitialized_devnet
     assert not list(Path(devnet.runner.env["HOME"]).iterdir())
     assert "OFFCKB_CLI_PATH" not in devnet.runner.env
@@ -91,6 +92,7 @@ def test_fresh_daemon_initializes_and_becomes_ready(uninitialized_devnet: Devnet
 def test_miner_advances_tip_and_indexer_catches_up(
     devnet: DevnetManager, offckb: OffckbRunner, rpc: RpcClient
 ) -> None:
+    """用户得到可持续产块、可查询最新状态的本地开发链。"""
     before = rpc.tip()
     wait_until(lambda: rpc.tip() > before, timeout_s=30.0, interval_s=0.5, description="miner to advance tip")
     target = rpc.tip()
@@ -118,6 +120,7 @@ def test_miner_advances_tip_and_indexer_catches_up(
 
 # TEST-MAP: NODE-04
 def test_stop_terminates_the_owned_service_group(devnet: DevnetManager) -> None:
+    """用户结束后台开发后，停止命令释放整套服务及其占用资源。"""
     owned_pid = devnet.pid
     assert owned_pid is not None
     owned_pgid = os.getpgid(owned_pid)

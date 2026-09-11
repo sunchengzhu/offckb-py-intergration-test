@@ -1,8 +1,8 @@
 # offckb-py-intergration-test
 
-独立的 OffCKB Python 黑盒集成测试工程，可单独作为 GitHub 仓库维护。测试调用打包安装后的 `offckb` CLI，启动真实 CKB devnet，并通过 RPC、交易确认和链上 cell 验证结果。
+OffCKB 的 Python 黑盒集成测试工程，围绕开发者使用 OffCKB 快速上手 CKB 的实际流程验收。测试调用打包安装后的 `offckb` CLI，通过真实 devnet、RPC、交易确认和生成文件核验用户操作的结果。
 
-首期覆盖节点生命周期、账户和 CKB 流转、SUDT/xUDT 生命周期、合约部署与 Type ID 升级。项目脚手架、RPC proxy 与日志的独立验收留待后续批次。
+用例按“启动开发链 → 查看账户并转账 → 创建、构建和部署合约 → 运行示例与调试问题 → 保存或重置开发环境”组织，并覆盖内置脚本、代币发行和配置调整。完整场景与优先级见 [评审目录](reviews/README.md)；自动化覆盖由代码中的 `TEST-MAP` 计算。
 
 ## 选择被测 OffCKB 版本
 

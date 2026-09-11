@@ -79,6 +79,19 @@ def _ckb_to_shannons(value: Any) -> int:
     return int(amount)
 
 
+def _visible_ckb_balance(offckb: Any, rpc: Any, address: str, lock_script: Any) -> int:
+    """核对用户查询到的纯 CKB 余额，并返回对应的链上数量。"""
+    result = _json_result(offckb.run("balance", address, "--network", "devnet", "--no-udt"))
+    assert result["command"] == "balance"
+    assert result["network"] == "devnet"
+    assert result["address"] == address
+    assert result["udt"] == []
+    expected = rpc.ckb_balance(lock_script)
+    actual = _ckb_to_shannons(result["ckb"])
+    assert actual == expected, {"address": address, "cli": actual, "chain": expected}
+    return actual
+
+
 def _bech32_polymod(values: Iterable[int]) -> int:
     checksum = 1
     generators = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
@@ -201,6 +214,7 @@ def _transaction_fee(transaction_result: Mapping[str, Any], input_cells: list[Ma
 def test_fresh_devnet_exposes_twenty_prefunded_accounts(
     fresh_devnet: Any, offckb: Any, rpc: Any, accounts: list[Any]
 ) -> None:
+    """用户启动后能找到自带测试资金、地址正确的开发账户。"""
     del fresh_devnet  # The fixture owns readiness, a clean chain, and teardown.
     rpc.wait_indexer()
     completed = offckb.run("accounts", "--json")
@@ -239,6 +253,7 @@ def test_fresh_devnet_exposes_twenty_prefunded_accounts(
 def test_balance_omits_existing_udt_only_when_requested(
     devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any
 ) -> None:
+    """用户能查看已有代币，也能选择只查看可花费的纯 CKB。"""
     del devnet
     rpc.wait_indexer()
     account = accounts[6]
@@ -278,11 +293,21 @@ def test_balance_omits_existing_udt_only_when_requested(
 def test_deposit_commits_and_increases_receiver_by_exact_amount(
     devnet: Any, offckb: Any, rpc: Any, accounts: list[Any]
 ) -> None:
+    """用户给没有预充值的新开发地址充值，并通过 OffCKB 确认到账。"""
     devnet.wait_miner_funded(_ckb_to_shannons(DEPOSIT_AMOUNT) + SHANNONS_PER_CKB)
-    receiver = accounts[-1]
-    receiver_address = str(_field(receiver, "address"))
-    receiver_lock = _account_lock(receiver)
-    balance_before = rpc.ckb_balance(receiver_lock)
+    # 独立测试接收地址，仅保存公钥派生的地址和 lock；不使用内置预充值账户。
+    receiver_address = "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqt4z78ng4yutl5u6xsv27ht6q08mhujf8s2r0n40"
+    receiver_lock = {
+        "code_hash": "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8",
+        "hash_type": "type",
+        "args": "0x75178f34549c5fe9cd1a0c57aebd01e7ddf9249e",
+    }
+    assert _decode_full_ckb_address(receiver_address) == receiver_lock
+    assert all(_script(_account_lock(account)) != receiver_lock for account in accounts)
+    rpc.wait_indexer()
+    assert rpc.live_cells(receiver_lock) == [], "the new development address must start without cells"
+    balance_before = _visible_ckb_balance(offckb, rpc, receiver_address, receiver_lock)
+    assert balance_before == 0
 
     result = _json_result(
         offckb.run("deposit", receiver_address, DEPOSIT_AMOUNT, "--network", "devnet", "--json")
@@ -294,7 +319,7 @@ def test_deposit_commits_and_increases_receiver_by_exact_amount(
 
     tx_hash = _tx_hash(result)
     _wait_committed_and_indexed(rpc, tx_hash)
-    balance_after = rpc.ckb_balance(receiver_lock)
+    balance_after = _visible_ckb_balance(offckb, rpc, receiver_address, receiver_lock)
     assert balance_after - balance_before == _ckb_to_shannons(DEPOSIT_AMOUNT)
 
 
@@ -306,7 +331,9 @@ def test_transfer_uses_private_key_file_and_accounts_for_the_actual_fee(
     accounts: list[Any],
     private_key_file: Any,
 ) -> None:
+    """用户用所选账户转账，双方查询到的余额与实际收款和手续费一致。"""
     sender, receiver = accounts[8], accounts[9]
+    sender_address = str(_field(sender, "address"))
     receiver_address = str(_field(receiver, "address"))
     sender_lock = _account_lock(sender)
     receiver_lock = _account_lock(receiver)
@@ -327,9 +354,9 @@ def test_transfer_uses_private_key_file_and_accounts_for_the_actual_fee(
     assert funding["toAddress"] == str(_field(sender, "address"))
     _wait_committed_and_indexed(rpc, _tx_hash(funding))
 
-    sender_before = rpc.ckb_balance(sender_lock)
+    sender_before = _visible_ckb_balance(offckb, rpc, sender_address, sender_lock)
     assert sender_before - sender_before_funding == _ckb_to_shannons(TRANSFER_FUNDING_AMOUNT)
-    receiver_before = rpc.ckb_balance(receiver_lock)
+    receiver_before = _visible_ckb_balance(offckb, rpc, receiver_address, receiver_lock)
     sender_cells = rpc.live_cells(sender_lock)
     assert isinstance(sender_cells, list) and sender_cells
 
@@ -358,8 +385,8 @@ def test_transfer_uses_private_key_file_and_accounts_for_the_actual_fee(
 
     transaction_result = _wait_committed_and_indexed(rpc, _tx_hash(result))
     actual_fee = _transaction_fee(transaction_result, sender_cells)
-    sender_after = rpc.ckb_balance(sender_lock)
-    receiver_after = rpc.ckb_balance(receiver_lock)
+    sender_after = _visible_ckb_balance(offckb, rpc, sender_address, sender_lock)
+    receiver_after = _visible_ckb_balance(offckb, rpc, receiver_address, receiver_lock)
     amount = _ckb_to_shannons(TRANSFER_AMOUNT)
 
     assert receiver_after - receiver_before == amount
