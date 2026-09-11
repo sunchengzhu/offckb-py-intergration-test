@@ -84,8 +84,6 @@ OffCKB 自身的 `pnpm typecheck`、`pnpm lint`、`pnpm test:ci` 和 shell 测�
 
 ## 独立 GitHub 仓库
 
-仓库地址：[sunchengzhu/offckb-py-intergration-test](https://github.com/sunchengzhu/offckb-py-intergration-test)。`.gitignore` 已排除源码链接、虚拟环境、缓存、二进制包和运行报告；版本管理只包含测试代码、评审文档及配置。
+`.gitignore` 已排除源码链接、虚拟环境、缓存、二进制包和运行报告；版本管理只包含测试代码、评审文档及配置。
 
 修改通过独立分支向 `main` 发起 PR，评审后合并。CI 环境准备 Node/pnpm、Python 和 CKB artifact，通过环境变量传入路径后同样执行 `make prepare`、`make test`，源码模式按需获取产品源码。
-
-本工程从 OffCKB 的 `integration-tests/` 拆出，保留原 MIT 许可证，见 `LICENSE`。
