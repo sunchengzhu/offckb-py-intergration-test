@@ -12,7 +12,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 import pytest
 
@@ -27,6 +27,8 @@ from .harness import (
     OffckbRunner,
     RpcClient,
     is_port_open,
+    read_ckb_version,
+    read_cli_settings,
     scrub_secret_artifacts,
 )
 
@@ -581,18 +583,7 @@ def _create_isolated_env(run_root: Path, ckb_bin: Path) -> dict[str, str]:
     env = _empty_user_env(run_root)
     home = Path(env["HOME"])
 
-    version_result = subprocess.run(
-        [str(ckb_bin), "--version"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=10,
-        check=False,
-    )
-    match = re.search(r"\b(\d+\.\d+\.\d+(?:-rc\d+)?)\b", version_result.stdout)
-    if version_result.returncode != 0 or match is None:
-        raise pytest.UsageError(f"cannot determine CKB version from {ckb_bin}: {version_result.stdout}")
-    ckb_version = match.group(1)
+    ckb_version = read_ckb_version(ckb_bin)
     managed_root = run_root / "managed-bins"
     managed_ckb = managed_root / ckb_version / ("ckb.exe" if os.name == "nt" else "ckb")
     managed_ckb.parent.mkdir(parents=True, exist_ok=True)
@@ -818,6 +809,38 @@ def offckb(pytestconfig: pytest.Config) -> OffckbRunner:
     return pytestconfig.stash[_RUNTIME].runner
 
 
+@pytest.fixture(scope="session")
+def package_default_settings(offckb: OffckbRunner, run_root: Path) -> dict[str, Any]:
+    """Read packaged defaults through the public CLI in a separate empty HOME."""
+    root = run_root / "default-settings-probe"
+    for name in ("home", "workspace", "commands", "tmp"):
+        (root / name).mkdir(parents=True)
+    runner = OffckbRunner(
+        offckb.command, cli_entry=offckb.cli_entry, env=_empty_user_env(root),
+        cwd=root / "workspace", records_dir=root / "commands",
+    )
+    settings = read_cli_settings(runner)
+    settings["probeHome"] = runner.env["HOME"]
+    return settings
+
+
+@pytest.fixture(scope="session")
+def default_ckb_bin(
+    pytestconfig: pytest.Config, ckb_bin: Path, package_default_settings: dict[str, Any],
+) -> Path:
+    selected = pytestconfig.getoption("--default-ckb-bin")
+    binary = Path(selected).expanduser().resolve() if selected else ckb_bin
+    assert binary.is_file() and os.access(binary, os.X_OK), f"CKB binary is not executable: {binary}"
+    version = read_ckb_version(binary)
+    expected = package_default_settings["bins"]["defaultCKBVersion"]
+    assert version == expected, (
+        f"The default/selected-version scenarios require the package's default CKB {expected}, "
+        f"but {binary} reports {version}. Prepare that real local binary and set DEFAULT_CKB_BIN "
+        "or --default-ckb-bin. The test never downloads CKB or changes OffCKB's default version."
+    )
+    return binary
+
+
 def _create_offckb_runner(
     offckb_command: tuple[str, ...],
     offckb_artifact: OffckbArtifact,
@@ -925,10 +948,11 @@ def uninitialized_devnet(
     run_root: Path,
     ckb_bin: Path,
     pytestconfig: pytest.Config,
+    request: pytest.FixtureRequest,
 ) -> Iterator[DevnetManager]:
     """A first launch with no settings, managed binary, or earlier CLI invocation."""
     devnet_manager.close()
-    root = run_root / "first-launch"
+    root = run_root / "isolated-devnets" / request.node.name
     for directory in ("home", "workspace", "commands", "tmp"):
         (root / directory).mkdir(parents=True)
     runner = OffckbRunner(
@@ -949,6 +973,14 @@ def uninitialized_devnet(
         yield manager
     finally:
         manager.close()
+
+
+@pytest.fixture
+def isolated_devnet(uninitialized_devnet: DevnetManager, ckb_bin: Path) -> DevnetManager:
+    """An independent user environment with the business-test CKB prepared locally."""
+    devnet = uninitialized_devnet
+    devnet.runner.env.update(_create_isolated_env(devnet.runner.cwd.parent, ckb_bin))
+    return devnet
 
 
 @pytest.fixture
