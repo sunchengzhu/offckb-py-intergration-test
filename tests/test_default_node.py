@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import signal
@@ -25,57 +24,6 @@ from .harness import (
 
 
 pytestmark = [pytest.mark.core]
-
-
-@pytest.fixture(scope="module")
-def package_default_settings(offckb: OffckbRunner, run_root: Path) -> dict[str, Any]:
-    """Read packaged defaults through the public CLI in a separate empty HOME."""
-    root = run_root / "default-settings-probe"
-    for name in ("home", "workspace", "commands", "tmp"):
-        (root / name).mkdir(parents=True)
-    runner = OffckbRunner(
-        offckb.command,
-        cli_entry=offckb.cli_entry,
-        env=_empty_user_env(root),
-        cwd=root / "workspace",
-        records_dir=root / "commands",
-    )
-    result = runner.run("config", "list")
-    candidates = []
-    for line in result.stderr.splitlines():
-        event = json.loads(line)
-        try:
-            settings = json.loads(event.get("message", ""))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(settings, dict) and "bins" in settings and "devnet" in settings:
-            candidates.append(settings)
-    assert len(candidates) == 1, "offckb config list did not expose one default settings object"
-    settings = candidates[0]
-    # Only translate the isolated user root; do not overwrite the package's defaults.
-    settings["probeHome"] = runner.env["HOME"]
-    return settings
-
-
-@pytest.fixture(scope="module")
-def default_ckb_bin(
-    pytestconfig: pytest.Config, ckb_bin: Path, package_default_settings: dict[str, Any]
-) -> Path:
-    selected = pytestconfig.getoption("--default-ckb-bin")
-    binary = Path(selected).expanduser().resolve() if selected else ckb_bin
-    assert binary.is_file() and os.access(binary, os.X_OK), f"CKB binary is not executable: {binary}"
-    result = subprocess.run(
-        [str(binary), "--version"], capture_output=True, text=True, timeout=10, check=False
-    )
-    version = re.search(r"\b(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)\b", result.stdout)
-    expected = package_default_settings["bins"]["defaultCKBVersion"]
-    assert result.returncode == 0 and version is not None, result.stdout + result.stderr
-    assert version.group(1) == expected, (
-        f"NODE-13 requires the package's default CKB {expected}, but {binary} reports {version.group(1)}. "
-        "Prepare that real local binary and set DEFAULT_CKB_BIN or --default-ckb-bin. "
-        "The test never downloads CKB or changes OffCKB's default version."
-    )
-    return binary
 
 
 def _cleanup_foreground_group(

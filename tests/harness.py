@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import shutil
 import socket
@@ -22,6 +23,17 @@ DIRECT_RPC_URL = "http://127.0.0.1:8114"
 PROXY_RPC_URL = "http://127.0.0.1:28114"
 DEVNET_PORTS = (8114, 28114, 18114, 8115)
 CKB = 100_000_000
+
+
+def read_ckb_version(binary: Path) -> str:
+    result = subprocess.run(
+        [str(binary), "--version"], capture_output=True, text=True, timeout=10, check=False,
+    )
+    version = re.search(r"\b(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)\b", result.stdout)
+    assert result.returncode == 0 and version is not None, (
+        f"cannot determine CKB version from {binary}: {result.stdout}{result.stderr}"
+    )
+    return version.group(1)
 
 
 def hex_int(value: str | int) -> int:
@@ -369,6 +381,22 @@ def _redact_argv(argv: Sequence[str]) -> list[str]:
 
 def _display_argv(argv: Sequence[str]) -> str:
     return " ".join(_redact_argv(argv))
+
+
+def read_cli_settings(runner: OffckbRunner) -> dict[str, Any]:
+    """config list exposes effective settings in a JSON-mode stderr event."""
+    result = runner.run("config", "list")
+    candidates = []
+    for line in result.stderr.splitlines():
+        event = json.loads(line)
+        try:
+            settings = json.loads(event.get("message", ""))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(settings, dict) and "bins" in settings and "devnet" in settings:
+            candidates.append(settings)
+    assert len(candidates) == 1, "offckb config list did not expose one settings object"
+    return candidates[0]
 
 
 class RpcClient:
@@ -817,7 +845,7 @@ class DevnetManager:
         self.start()
         return self
 
-    def start(self) -> dict[str, Any]:
+    def start(self, *, use_managed_binary: bool = False) -> dict[str, Any]:
         occupied = [port for port in DEVNET_PORTS if is_port_open(port)]
         if occupied:
             raise AssertionError(
@@ -825,11 +853,11 @@ class DevnetManager:
                 "Stop the owning service rather than letting the test runner kill it."
             )
         try:
+            binary_args = () if use_managed_binary else ("--binary-path", self.ckb_bin)
             result = self.runner.run(
                 "node",
                 "--daemon",
-                "--binary-path",
-                self.ckb_bin,
+                *binary_args,
                 timeout_s=self.startup_timeout_s,
             )
         except BaseException as error:

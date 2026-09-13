@@ -7,7 +7,11 @@
 - `conftest.py`：版本配置与产物校验、命令行参数、隔离 HOME、固定端口租约和 fixture。
 - `harness.py`：CLI 执行、RPC 轮询、Indexer/cell oracle、daemon 精确归属与 teardown。
 - `test_devnet_lifecycle.py`：空配置首次启动、实际 CKB 路径、ready、产块、Indexer 和 OffCKB 自行停止并清理 PID。
+- `test_devnet_state.py`：已完成真实转账后停止并重启，验证配置和开发进度保留；对比 `clean -d` 与完整 `clean` 的数据、配置及真实调试缓存边界，同时保护全局设置、托管二进制和目录外文件。
 - `test_default_node.py`：普通 `offckb node` 自行选择包默认版本的真实 CKB，初始化、提供连接地址、产块，Ctrl+C 后退出并可再次启动。
+- `test_global_settings.py`：通过 CLI 选择非默认 CKB 版本，核对持久化及新进程读取，再让 OffCKB 自行选择托管二进制启动 node/miner，保留其他设置。
+- `test_devnet_configuration.py`：将日志级别按 `warn → info → warn` 调整并正常重启，只核对本轮新增日志，同时验证原交易保留、链继续产块。
+- `test_cli_contract.py`：复用已安装的 CLI，核对 `offckb --version` 与该安装包的 `package.json` 一致。
 - `test_ckb_value_flow.py`：找到预充值账户、查看资产、给初始余额为零的新地址充值，以及通过所选账户转账；充值和转账后同时核对 CLI 余额与链上结果。
 - `test_udt_lifecycle.py`：通过非默认账户发行、转账和部分销毁 SUDT/xUDT，每一步比较 CLI 余额与链上 live cells；销毁前自行给另一持有者准备非零代币，单独运行也能验证其余额不受影响；自定义 xUDT args 区别于默认值。
 - `asset_assertions.py`：用 direct RPC 独立汇总余额，再核对 OffCKB 的资产发现、分类和过滤结果。
@@ -36,6 +40,10 @@ make test TESTS='tests/test_transaction_debugging.py tests/test_logs.py tests/te
 ```
 
 `TESTS` 也可只保留一个模块；缺少项目依赖缓存时，追加 `ARGS='--project-online'` 显式允许下载。SDK 交易辅助程序见 [fixtures 说明](../fixtures/README.md)。
+
+聚焦“继续开发与重置环境”：`make test TESTS=tests/test_devnet_state.py`。三条用例各自准备独立环境、通过 CLI 保存非默认配置并完成转账；不需要项目构建或 debugger，也不依赖其他测试先运行。
+
+聚焦“配置生效与版本入口”：`make test TESTS='tests/test_global_settings.py tests/test_devnet_configuration.py tests/test_cli_contract.py'`。版本选择用例需要两个真实本地 CKB：`CKB_BIN` 与包默认版本不同，`DEFAULT_CKB_BIN` 与包默认版本一致；两者都放入隔离托管目录，验证实际选中的二进制。日志配置用例不需要项目构建或 debugger。
 
 `make prepare` 根据 `config/offckb.toml` 下载发布包或从所选源码构建包；测试安装该包后执行 `offckb --version`，核对包内版本，并显示实际版本与来源。`scripts/test_offckb_target.py` 是运行设施的版本选择、发布包校验和版本命令回归检查，使用本地 Git 仓库、模拟 npm 响应和临时 CLI 替身，通过 `.venv/bin/python -m unittest scripts.test_offckb_target` 执行，不属于 OffCKB 产品评审用例或其覆盖率。
 
