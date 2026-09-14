@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 from tests.asset_assertions import assert_udt_balance
 from tests.harness import Account, DevnetManager, OffckbRunner, RpcClient, rpc_script
 from tests.test_contract_deployment import _assert_deployment_owner
+from tests.test_node_recovery import _owned_processes
 from tests.test_transaction_debugging import _assert_debug_context
 from tests.test_udt_lifecycle import _assert_issue_transaction
 
@@ -64,6 +65,33 @@ class StopObservationTests(unittest.TestCase):
 
         self.manager.runner.run.side_effect = product_stop
         self.assertTrue(self.manager.stop()["stopped"])
+
+
+class FailedStartupOwnershipTests(unittest.TestCase):
+    def test_shared_binary_and_log_readers_do_not_belong_to_the_failed_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "case" / "workspace"
+            workspace.mkdir(parents=True)
+            real_binary = root / "shared-ckb"
+            real_binary.touch()
+            alias = workspace / "ckb"
+            alias.symlink_to(real_binary)
+            entry = root / "package" / "index.js"
+            devnet = SimpleNamespace(
+                runner=SimpleNamespace(cwd=workspace, cli_entry=entry), ckb_bin=alias,
+            )
+            commands = {
+                101: f"node {entry} node --daemon --binary-path {alias}",
+                102: f"{real_binary} run -C {workspace.parent}/home/devnet",
+                103: f"{real_binary} miner -C {workspace.parent}/home/devnet",
+                201: f"node {entry} node --daemon --binary-path {root}/other/ckb",
+                202: f"{real_binary} run -C {root}/other/devnet",
+                203: f"tail -f {workspace.parent}/commands/daemon.log",
+            }
+            snapshot = SimpleNamespace(stdout="\n".join(f"{pid} {cmd}" for pid, cmd in commands.items()))
+            with patch("tests.test_node_recovery.subprocess.run", return_value=snapshot):
+                self.assertEqual(_owned_processes(devnet), {pid: commands[pid] for pid in (101, 102, 103)})
 
 
 class AssetObservationTests(unittest.TestCase):

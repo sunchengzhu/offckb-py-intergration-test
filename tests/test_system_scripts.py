@@ -38,6 +38,38 @@ def _out_point(point: dict[str, Any]) -> dict[str, str]:
     return {"tx_hash": point.get("txHash", point.get("tx_hash")), "index": hex(hex_int(index))}
 
 
+def _read_sdk_export(stderr: str, title: str) -> dict[str, Any]:
+    messages = [json.loads(line)["message"].strip() for line in stderr.splitlines() if line.strip()]
+    assert title in messages, "the SDK export must identify devnet and the requested style"
+    documents = [json.loads(message) for message in messages if message.startswith("{")]
+    assert len(documents) == 1 and documents[0], "the export must contain one nonempty JSON object"
+    return documents[0]
+
+
+def _lumos_script(config: dict[str, Any]) -> dict[str, Any]:
+    # Public @ckb-lumos/config-manager ScriptConfig fields. DEP_TYPE is
+    # camelCase here; conversion to dep_group belongs at the RPC boundary.
+    assert re.fullmatch(r"0x[0-9a-fA-F]{64}", config["CODE_HASH"])
+    assert config["HASH_TYPE"] in {"type", "data", "data1", "data2"}
+    assert re.fullmatch(r"0x[0-9a-fA-F]{64}", config["TX_HASH"])
+    assert re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", config["INDEX"])
+    assert config["DEP_TYPE"] in {"depGroup", "code"}
+    return {
+        "codeHash": config["CODE_HASH"], "hashType": config["HASH_TYPE"],
+        "cellDeps": [{"cellDep": {
+            "outPoint": {"txHash": config["TX_HASH"], "index": hex_int(config["INDEX"])},
+            "depType": config["DEP_TYPE"],
+        }}],
+    }
+
+
+def _reference(script: dict[str, Any]) -> tuple[Any, ...]:
+    return script["codeHash"], script["hashType"], [
+        (_out_point(dep["cellDep"]["outPoint"]), dep["cellDep"]["depType"])
+        for dep in script["cellDeps"]
+    ]
+
+
 def _assert_script_reference(rpc: RpcClient, name: str, script: dict[str, Any]) -> None:
     assert re.fullmatch(r"0x[0-9a-f]{64}", script.get("codeHash", "")), f"invalid {name} code hash"
     assert script.get("hashType") in {"type", "data", "data1", "data2"}, f"invalid {name} hash type"
@@ -131,3 +163,61 @@ def test_displayed_system_scripts_can_spend_an_account_input(
     # The committed transaction above proves consumption; CKB may report a
     # spent cell as unknown after removing it from the live-cell index.
     assert rpc.call("get_live_cell", [selected["out_point"], False])["status"] in {"dead", "unknown"}
+
+
+# TEST-MAP: SYS-02
+def test_sdk_exports_and_saved_project_config_match_the_local_chain(
+    devnet: DevnetManager,
+    offckb: OffckbRunner,
+    rpc: RpcClient,
+    run_root: Path,
+    integration_root: Path,
+    pytestconfig: pytest.Config,
+) -> None:
+    """用户复制 SDK 配置并保存到项目路径，得到可解析且属于当前链的脚本引用。"""
+    displayed = _read_displayed_scripts(offckb.run("system-scripts", "--network", "devnet").stderr)
+    exports = {
+        style: _read_sdk_export(
+            offckb.run("system-scripts", "--network", "devnet", "--export-style", style).stderr,
+            f"*** CKB DEVNET System Scripts As {title} ***",
+        )
+        for style, title in (("ccc", "CCC KnownScripts"), ("lumos", "LumosConfig"))
+    }
+    lumos = exports["lumos"]
+    assert lumos["PREFIX"] == "ckt"
+    assert isinstance(lumos["SCRIPTS"], dict) and lumos["SCRIPTS"]
+    lumos_scripts = {name: _lumos_script(config) for name, config in lumos["SCRIPTS"].items()}
+
+    workspace = run_root / "workspace"
+    request = workspace / "parse-system-script-exports.json"
+    request.write_text(json.dumps({"rpcUrl": rpc.url, "ccc": exports["ccc"]}))
+    helper = OffckbRunner(
+        (pytestconfig.getoption("--node-bin"), str(integration_root / "fixtures/parse_system_script_exports.cjs")),
+        env=offckb.env, cwd=offckb.cwd, records_dir=run_root / "commands" / "parse-system-script-exports",
+    )
+    parsed = json.loads(helper.run(offckb.cli_entry, request, json_mode=False).stdout)["representatives"]
+
+    destination = workspace / "my contract project" / "config" / "system scripts.json"
+    destination.parent.mkdir(parents=True)
+    assert not destination.exists()
+    offckb.run(
+        "system-scripts", "--network", "devnet", "--export-style", "ccc", "--output", destination,
+    )
+    assert destination.is_file() and destination.stat().st_size > 0
+    saved = json.loads(destination.read_text())
+    assert isinstance(saved, dict) and {"devnet", "testnet", "mainnet"} <= saved.keys()
+    for network in ("devnet", "testnet", "mainnet"):
+        assert isinstance(saved[network], dict) and saved[network], f"empty {network} configuration"
+        for name in ("secp256k1_blake160_sighash_all", "xudt"):
+            script = saved[network][name]["script"]
+            assert re.fullmatch(r"0x[0-9a-f]{64}", script["codeHash"])
+            assert script["hashType"] in {"type", "data", "data1", "data2"} and script["cellDeps"]
+
+    for name, lumos_name in (("secp256k1_blake160_sighash_all", "SECP256K1_BLAKE160"), ("xudt", "XUDT")):
+        expected = _reference(displayed[name])
+        for origin, script in (
+            ("CCC", parsed[name]), ("Lumos", lumos_scripts[lumos_name]),
+            ("saved devnet", saved["devnet"][name]["script"]),
+        ):
+            assert _reference(script) == expected, f"{origin} disagrees with the displayed {name} reference"
+            _assert_script_reference(rpc, name, script)

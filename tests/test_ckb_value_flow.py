@@ -12,6 +12,12 @@ from typing import Any
 import pytest
 
 from .asset_assertions import assert_udt_balance
+from .asset_failure_support import (
+    assert_asset_state_unchanged,
+    assert_cli_failure,
+    capture_asset_state,
+    temporary_devnet_account,
+)
 
 
 SHANNONS_PER_CKB = 100_000_000
@@ -391,3 +397,93 @@ def test_transfer_uses_private_key_file_and_accounts_for_the_actual_fee(
 
     assert receiver_after - receiver_before == amount
     assert sender_before - sender_after == amount + actual_fee
+
+
+# TEST-MAP: CKB-05
+def test_transfer_all_sweeps_every_spendable_cell(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any, tmp_path: Path,
+) -> None:
+    """用户回收临时账户的多笔充值，准确预留 0.001 CKB 手续费。"""
+    key_path = tmp_path / "temporary-sender.key"
+    sender = temporary_devnet_account("sweep", key_path, offckb)
+    receiver, funder = accounts[9], accounts[8]
+    assert _decode_full_ckb_address(sender.address) == sender.lock_script
+    rpc.wait_indexer()
+    assert rpc.live_cells(sender.lock_script) == []
+    for amount in ("100", "150"):
+        funding = _json_result(offckb.run(
+            "transfer", sender.address, amount, "--network", "devnet",
+            "--privkey-file", private_key_file(funder),
+        ))
+        _wait_committed_and_indexed(rpc, _tx_hash(funding))
+
+    before = _visible_ckb_balance(offckb, rpc, sender.address, sender.lock_script)
+    assert before == 250 * SHANNONS_PER_CKB
+    cells = rpc.live_cells(sender.lock_script)
+    assert len(cells) == 2
+    receiver_before = _visible_ckb_balance(offckb, rpc, receiver.address, receiver.lock_script)
+    result = _json_result(offckb.run(
+        "transfer-all", receiver.address, "--network", "devnet", "--privkey-file", key_path,
+    ))
+    assert result["command"] == "transfer-all"
+    assert result["network"] == "devnet" and result["toAddress"] == receiver.address
+    transaction = _wait_committed_and_indexed(rpc, _tx_hash(result))
+    assert _transaction_fee(transaction, cells) == _ckb_to_shannons("0.001")
+    assert _visible_ckb_balance(offckb, rpc, receiver.address, receiver.lock_script) == (
+        receiver_before + before - _ckb_to_shannons("0.001")
+    )
+    assert _visible_ckb_balance(offckb, rpc, sender.address, sender.lock_script) == 0
+    assert rpc.live_cells(sender.lock_script) == []
+
+
+# TEST-MAP: CKB-06
+@pytest.mark.parametrize("credential", ["missing-file", "invalid-content"])
+def test_bad_private_key_file_does_not_submit_or_change_receiver(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], tmp_path: Path, credential: str,
+) -> None:
+    """用户填错密钥文件时得到明确失败，目标资产及交易提交记录不变。"""
+    key_path = tmp_path / "sender.key"
+    secret = "offckb-invalid-private-key-content"
+    if credential == "invalid-content":
+        key_path.touch(mode=0o600)
+        key_path.write_text(secret, encoding="utf-8")
+        offckb.register_secret(secret)
+    receiver = accounts[9]
+    before = capture_asset_state(offckb, rpc, receiver)
+    result = offckb.run(
+        "transfer", receiver.address, "100", "--network", "devnet",
+        "--privkey-file", key_path, check=False,
+    )
+    assert secret not in result.stdout and secret not in result.stderr, "error exposed credential contents"
+    message = assert_cli_failure(result).lower()
+    assert "private key" in message
+    assert ("could not read" if credential == "missing-file" else "invalid") in message
+    assert_asset_state_unchanged(offckb, rpc, before)
+
+
+# TEST-MAP: CKB-07
+def test_unfunded_sender_failure_allows_a_subsequent_normal_transfer(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any, tmp_path: Path,
+) -> None:
+    """有效空账户的失败不会妨碍随后给同一地址进行正常转账。"""
+    key_path = tmp_path / "unfunded.key"
+    sender = temporary_devnet_account("unfunded", key_path, offckb)
+    receiver = accounts[9]
+    assert _decode_full_ckb_address(sender.address) == sender.lock_script
+    before = capture_asset_state(offckb, rpc, sender, receiver)
+    assert before.live_cells[0] == []
+    result = offckb.run(
+        "transfer", receiver.address, "100", "--network", "devnet",
+        "--privkey-file", key_path, check=False,
+    )
+    assert_cli_failure(result)
+    assert_asset_state_unchanged(offckb, rpc, before)
+    receiver_before = _visible_ckb_balance(offckb, rpc, receiver.address, receiver.lock_script)
+    normal = _json_result(offckb.run(
+        "transfer", receiver.address, "100", "--network", "devnet",
+        "--privkey-file", private_key_file(accounts[8]),
+    ))
+    _wait_committed_and_indexed(rpc, _tx_hash(normal))
+    assert _visible_ckb_balance(offckb, rpc, receiver.address, receiver.lock_script) == (
+        receiver_before + 100 * SHANNONS_PER_CKB
+    )

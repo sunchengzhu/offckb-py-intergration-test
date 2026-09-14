@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from .harness import rpc_script
+from .asset_failure_support import assert_asset_state_unchanged, assert_cli_failure, capture_asset_state
 
 
 _CKB_HASH_PERSONALIZATION = b"ckb-default-hash"
@@ -351,3 +352,44 @@ def test_upgrade_preserves_type_id_and_consumes_old_cell(
         code_hash=new_recipe["type_id"],
         hash_type="type",
     )
+
+
+# TEST-MAP: DEPLOY-04
+def test_corrupted_migration_type_id_cannot_upgrade_the_live_contract(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any, tmp_path: Path,
+) -> None:
+    """用户的部署记录被改动时，升级明确失败且保留原合约与记录。"""
+    rpc.wait_indexer()
+    owner = accounts[7]
+    key_path = private_key_file(owner)
+    contract = _write_contract(tmp_path / "corrupted-type-id.bin", _TYPE_ID_CONTRACT_V1)
+    output = tmp_path / "deployment"
+    _run_deploy(offckb, contract, output, key_path, type_id=True)
+    migrations = _migration_files(output, contract.name)
+    assert len(migrations) == 1
+    recipe = _read_migration(migrations[0], contract.name)
+    _wait_committed(rpc, recipe["tx_hash"])
+    original_cell = _assert_live_code_cell(rpc, recipe, _TYPE_ID_CONTRACT_V1)
+    assert recipe["type_id"] == _script_hash(original_cell["output"]["type"])
+
+    migration = json.loads(migrations[0].read_text(encoding="utf-8"))
+    # Keep a valid 32-byte identifier so the failure exercises record/chain disagreement.
+    altered_type_id = recipe["type_id"][:-1] + ("1" if recipe["type_id"][-1] == "0" else "0")
+    migration["cell_recipes"][0]["type_id"] = altered_type_id
+    migrations[0].write_text(json.dumps(migration, indent=2) + "\n", encoding="utf-8")
+    saved_migrations = {path: path.read_bytes() for path in migrations}
+    saved_scripts = (output / "scripts.json").read_bytes()
+    before = capture_asset_state(offckb, rpc, owner)
+    contract.write_bytes(_TYPE_ID_CONTRACT_V2)
+    result = offckb.run(
+        "deploy", "--network", "devnet", "--target", contract, "--output", output,
+        "--privkey-file", key_path, "--yes", "--type-id", check=False,
+    )
+    message = assert_cli_failure(result).lower()
+    assert "type id" in message and ("not match" in message or "mismatch" in message)
+    assert "migration" in message and "live cell" in message
+    assert recipe["type_id"].lower() in message and altered_type_id.lower() in message
+    assert {path: path.read_bytes() for path in _migration_files(output, contract.name)} == saved_migrations
+    assert (output / "scripts.json").read_bytes() == saved_scripts
+    assert _assert_live_code_cell(rpc, recipe, _TYPE_ID_CONTRACT_V1) == original_cell
+    assert_asset_state_unchanged(offckb, rpc, before)
