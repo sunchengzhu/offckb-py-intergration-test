@@ -7,21 +7,25 @@
 - `conftest.py`：版本配置与产物校验、命令行参数、隔离 HOME、固定端口租约和 fixture。
 - `harness.py`：CLI 执行、RPC 轮询、Indexer/cell oracle、daemon 精确归属与 teardown。
 - `test_devnet_lifecycle.py`：空配置首次启动、实际 CKB 路径、ready、产块、Indexer 和 OffCKB 自行停止并清理 PID。
+- `test_node_recovery.py`：重复启动保留原开发链；错误二进制路径与真实端口冲突失败后，检查产品自行清理、冲突服务不受影响，修正后能在同一环境正常启动。
+- `test_node_stop_safety.py`：重复停止、已退出的 PID 和指向无关进程的 PID，检查停止结果、元数据及测试自建进程的响应和信号记录。
 - `test_devnet_state.py`：已完成真实转账后停止并重启，验证配置和开发进度保留；对比 `clean -d` 与完整 `clean` 的数据、配置及真实调试缓存边界，同时保护全局设置、托管二进制和目录外文件。
 - `test_default_node.py`：普通 `offckb node` 自行选择包默认版本的真实 CKB，初始化、提供连接地址、产块，Ctrl+C 后退出并可再次启动。
-- `test_global_settings.py`：通过 CLI 选择非默认 CKB 版本，核对持久化及新进程读取，再让 OffCKB 自行选择托管二进制启动 node/miner，保留其他设置。
-- `test_devnet_configuration.py`：将日志级别按 `warn → info → warn` 调整并正常重启，只核对本轮新增日志，同时验证原交易保留、链继续产块。
-- `test_cli_contract.py`：复用已安装的 CLI，核对 `offckb --version` 与该安装包的 `package.json` 一致。
-- `test_ckb_value_flow.py`：找到预充值账户、查看资产、给初始余额为零的新地址充值，以及通过所选账户转账；充值和转账后同时核对 CLI 余额与链上结果。
-- `test_udt_lifecycle.py`：通过非默认账户发行、转账和部分销毁 SUDT/xUDT，每一步比较 CLI 余额与链上 live cells；销毁前自行给另一持有者准备非零代币，单独运行也能验证其余额不受影响；自定义 xUDT args 区别于默认值。
+- `test_global_settings.py`：查看默认设置、管理代理、拒绝错误输入、隔离两套用户环境；选择非默认 CKB 版本后验证新进程读取及实际 node/miner 二进制。
+- `test_devnet_configuration.py`：批量保存选项的值和类型，拒绝非法输入、缺失或损坏文件及非终端交互；核对配置和链数据保护，并通过 `warn → info → warn` 重启验证日志生效及原交易保留。
+- `test_cli_contract.py`：帮助和版本入口、成功结果与进度的 JSON 分流、全局参数位置，以及参数解析和业务失败的输出契约与副作用。
+- `test_ckb_value_flow.py`：账户发现、余额、充值、所选账户转账与临时账户清扫；错误私钥和未充值账户失败后，核对资产保护及后续正常转账。
+- `test_udt_lifecycle.py`：通过非默认账户发行、转账和部分销毁 SUDT/xUDT，比较 CLI 余额与链上 live cells；验证自定义 args、其他持有者保护，以及非法输入或销毁量超额时资产不变。
 - `asset_assertions.py`：用 direct RPC 独立汇总余额，再核对 OffCKB 的资产发现、分类和过滤结果。
-- `test_contract_deployment.py`：使用非默认账户完成普通部署、Type-ID 首次部署与升级，核对记录和 code cell 的实际归属，升级时保留旧 migration 并新增记录。
+- `asset_failure_support.py`：为失败路径捕获 CLI 余额、live cells 和真实代理交易记录；用 direct RPC 排除 Indexer 滞后掩盖输入被消费的情况。
+- `test_contract_deployment.py`：使用非默认账户完成普通部署、Type-ID 首次部署与升级，核对记录和 code cell 归属；损坏 Type ID 记录时保护旧合约及部署文件。
 - `test_project_scaffolding.py`：默认创建与自动安装、自定义路径和名称、已有项目保护，以及生成项目原有脚本的构建、部署和 mock/devnet 示例调用；部署和调用均等待链上确认，调用交易必须引用本次部署。
 - `project_support.py`：项目用例共用的隔离工具准备、项目创建和原有脚本执行。
-- `diagnostic_support.py`：创建用户合约并输出唯一标识，使用原有脚本构建、部署，再通过公共 SDK 签名并经 OffCKB proxy 提交真实调用。
-- `test_transaction_debugging.py`：合约调用因预期错误被拒绝后，仅给出交易哈希调用 OffCKB debugger；核对脚本标识、失败结果和 OffCKB 自行补齐的真实输入与依赖。
+- `diagnostic_support.py`：通过原有项目脚本构建和部署带唯一输出的合约，准备经 proxy 的调用及直接上链的双脚本调用。
+- `test_transaction_debugging.py`：按哈希调试真实失败交易；直接上链且未缓存的交易只调试所选脚本，并用完整调试确认另一脚本的输出确实可见；均核对产品自行补齐的真实输入与依赖。
 - `test_logs.py`：后台运行时查找本次合约输出，并核对 node/script/miner/rpc 的真实日志来源、文本筛选和行数限制。
-- `test_system_scripts.py`：核对 OffCKB 展示的系统脚本与本地链一致，再使用导出的账户锁及依赖签名、消费真实输入，等待交易确认。
+- `test_rpc_proxy.py`：核对代理和直连属于同一开发链、成功交易缓存与链上一致、错误原样转发且可恢复，以及控制字符不能伪造日志。
+- `test_system_scripts.py`：用展示的账户锁及依赖签名、消费真实输入；核对 CCC/Lumos 导出和指定位置的多网络 JSON 文件，公共网络部分只检查结构。
 
 自动化行为应通过附近的 `TEST-MAP: <CASE-ID>` 注释映射到评审用例。
 
@@ -45,12 +49,14 @@ make test TESTS='tests/test_transaction_debugging.py tests/test_logs.py tests/te
 
 聚焦“配置生效与版本入口”：`make test TESTS='tests/test_global_settings.py tests/test_devnet_configuration.py tests/test_cli_contract.py'`。版本选择用例需要两个真实本地 CKB：`CKB_BIN` 与包默认版本不同，`DEFAULT_CKB_BIN` 与包默认版本一致；两者都放入隔离托管目录，验证实际选中的二进制。日志配置用例不需要项目构建或 debugger。
 
+聚焦“启动失败后的恢复与配置保护”：`make test TESTS='tests/test_node_recovery.py tests/test_node_stop_safety.py tests/test_devnet_configuration.py'`。端口冲突和无关进程均由测试创建，失败清理在任何兜底操作前判定；批量配置检查使用已经产块并停止的真实链数据。这些场景不需要项目构建或 debugger。
+
 `make prepare` 根据 `config/offckb.toml` 下载发布包或从所选源码构建包；测试安装该包后执行 `offckb --version`，核对包内版本，并显示实际版本与来源。`scripts/test_offckb_target.py` 是运行设施的版本选择、发布包校验和版本命令回归检查，使用本地 Git 仓库、模拟 npm 响应和临时 CLI 替身，通过 `.venv/bin/python -m unittest scripts.test_offckb_target` 执行，不属于 OffCKB 产品评审用例或其覆盖率。
 
 测试不得依赖固定 sleep。成功交易必须等到 `committed`，依赖 Indexer 的后续操作再等待其追到提交块；资产数量由 live cells 独立核算。故意失败的合约交易可能在提交时就被拒绝、无法查询交易状态，此时核对明确的合约错误、proxy 保存的实际交易与 debugger 诊断，不能把任意 RPC 或网络错误当作预期失败。
 
 显式二进制首次启动用例不预写 OffCKB settings、不提供托管 CKB；默认前台用例同样不预写 settings，只预备包默认版本的托管二进制。其他业务用例预置本地托管二进制，避免辅助命令下载 CKB。均不设置 `OFFCKB_CLI_PATH`；项目通过隔离 PATH 调用同一个已安装 CLI。停止失败时仍执行限定归属的兜底清理，但保留失败结果。
 
-运行 `.venv/bin/python -m unittest scripts.test_acceptance_oracles` 可检查测试设施本身：故意留下 PID、让 CLI 漏报资产或忽略过滤参数、让部署记录与链上一起归属错误账户时，断言必须失败。这些替身检查不计入产品自动化覆盖率。
+运行 `.venv/bin/python -m unittest scripts.test_acceptance_oracles` 可检查测试设施本身：故意留下 PID、让 CLI 漏报资产或忽略过滤参数、让部署记录与链上一起归属错误账户时，断言必须失败；启动失败后的进程识别还会排除共用二进制的其他开发链及日志阅读进程。这些替身检查不计入产品自动化覆盖率。
 
 运行 `.venv/bin/python -m unittest scripts.test_process_runner` 可检查普通文本/JSON 命令执行、敏感信息脱敏，以及脚本超时后其子进程的回收；这些也不计入产品覆盖率。

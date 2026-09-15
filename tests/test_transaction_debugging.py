@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from .diagnostic_support import DiagnosticCall, diagnostic_call
+from .diagnostic_support import DiagnosticCall, diagnostic_call, direct_diagnostic_call
 from .harness import RpcClient, dep_group_members, hex_int, wait_until
 from .project_support import project_factory
 
@@ -73,3 +73,38 @@ def test_rejected_contract_transaction_can_be_debugged_by_its_hash(diagnostic_ca
     # Rejection must leave the original inputs available to the user.
     for input_cell in call.transaction["inputs"]:
         assert rpc.call("get_live_cell", [input_cell["previous_output"], False])["status"] == "live"
+
+
+# TEST-MAP: DBG-02
+def test_uncached_committed_transaction_debugs_only_the_selected_script(
+    direct_diagnostic_call: DiagnosticCall, rpc: RpcClient,
+) -> None:
+    """直接上链的交易按哈希恢复上下文，只执行用户指定的输入锁。"""
+    call = direct_diagnostic_call
+    cached = call.config_path / "transactions" / f"{call.tx_hash}.json"
+    full = call.config_path / "full-transactions" / f"{call.tx_hash}.json"
+    assert not cached.exists() and not full.exists(), "the transaction must enter debug without proxy caches"
+    chain_transaction = rpc.wait_transaction(call.tx_hash)["transaction"]
+    assert chain_transaction["hash"] == call.tx_hash
+    assert {key: value for key, value in chain_transaction.items() if key != "hash"} == call.transaction
+
+    selected = call.cli.run(
+        "debug", "--tx-hash", call.tx_hash, "--single-script", "input[0].lock", "--network", "devnet",
+        json_mode=False,
+    )
+    selected_output = selected.stdout + selected.stderr
+    assert call.markers[0] in selected_output, "debug did not execute the requested input lock"
+    assert call.markers[1] not in selected_output, "--single-script also executed the unrelated output type"
+    assert re.search(r"Run result:\s*0\b", selected_output), selected_output
+    assert json.loads(cached.read_text()) == chain_transaction
+    _assert_debug_context(call, rpc, json.loads(full.read_text()))
+
+    # Positive control on the same transaction: the other marker really is
+    # observable when all scripts run, so its absence above proves selection.
+    complete = call.cli.run("debug", "--tx-hash", call.tx_hash, "--network", "devnet", json_mode=False)
+    complete_output = complete.stdout + complete.stderr
+    for label, marker in (("Input[0].Lock", call.markers[0]), ("Output[0].Type", call.markers[1])):
+        assert label in complete_output, complete_output
+        group = complete_output.split(label, 1)[1]
+        group = re.split(r"(?:Input|Output)\[\d+\]\.(?:Lock|Type)", group, maxsplit=1)[0]
+        assert marker in group and re.search(r"Run result:\s*0\b", group), group

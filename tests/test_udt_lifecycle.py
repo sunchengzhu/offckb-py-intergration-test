@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from .asset_assertions import assert_udt_balance
+from .asset_failure_support import assert_asset_state_unchanged, assert_cli_failure, capture_asset_state
 
 
 HEX32_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -520,3 +521,73 @@ def test_destroy_partial_udt_keeps_exact_change(
     assert holder_after == holder_before_destroy - destroy_amount
     assert other_after == other_before_destroy
     assert holder_after + other_after == holder_before_destroy + other_before_destroy - destroy_amount
+
+
+# TEST-MAP: UDT-05
+@pytest.mark.parametrize("kind", ["sudt", "xudt"])
+@pytest.mark.parametrize(
+    ("operation", "amount", "invalid_type_args"),
+    [
+        pytest.param("issue", "0", False, id="zero-issue"),
+        pytest.param("transfer", "0x10", False, id="nondecimal-transfer"),
+        pytest.param("destroy", str(1 << 128), False, id="out-of-range-destroy"),
+        pytest.param("transfer", "10", True, id="short-type-args-transfer"),
+    ],
+)
+def test_invalid_udt_input_preserves_existing_assets(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any,
+    kind: str, operation: str, amount: str, invalid_type_args: bool,
+) -> None:
+    """已有代币时输入代表性的错误数量或标识，不能提交交易或改变资产。"""
+    holder, receiver = accounts[12], accounts[13]
+    type_args = _issuer_type_args(rpc, holder)
+    key_path = private_key_file(holder)
+    rpc.wait_indexer()
+    balance_before_issue = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    issue = _issue(
+        offckb, key_path, kind=kind, amount=1_000,
+        type_args=type_args if kind == "xudt" else None,
+    )
+    _wait_committed_and_indexed(rpc, _tx_hash(issue))
+    assert assert_udt_balance(offckb, rpc, holder, kind, type_args) == balance_before_issue + 1_000
+    before = capture_asset_state(offckb, rpc, holder, receiver)
+    selected_args = "0x1234" if invalid_type_args else type_args
+    if operation == "transfer":
+        command = ["transfer", receiver.address, amount, "--udt-type-args", selected_args]
+    else:
+        command = ["udt", operation, amount, "--type-args", selected_args]
+    result = offckb.run(
+        *command, "--network", "devnet", "--udt-kind", kind,
+        "--privkey-file", key_path, check=False,
+    )
+    message = assert_cli_failure(result).lower()
+    assert ("type args" if invalid_type_args else "amount") in message
+    assert_asset_state_unchanged(offckb, rpc, before)
+
+
+# TEST-MAP: UDT-06
+@pytest.mark.parametrize("kind", ["sudt", "xudt"])
+def test_destroy_more_than_owned_keeps_original_udt_cells_live(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any, kind: str,
+) -> None:
+    """销毁数量超过持有量时明确报告余额不足，并保留原代币与 CKB。"""
+    holder = accounts[12]
+    type_args = _issuer_type_args(rpc, holder)
+    key_path = private_key_file(holder)
+    rpc.wait_indexer()
+    before_issue = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    issue = _issue(
+        offckb, key_path, kind=kind, amount=1_000,
+        type_args=type_args if kind == "xudt" else None,
+    )
+    _wait_committed_and_indexed(rpc, _tx_hash(issue))
+    balance = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    assert balance == before_issue + 1_000
+    before = capture_asset_state(offckb, rpc, holder)
+    result = offckb.run(
+        "udt", "destroy", str(balance + 1), "--network", "devnet", "--udt-kind", kind,
+        "--type-args", type_args, "--privkey-file", key_path, check=False,
+    )
+    message = assert_cli_failure(result).lower()
+    assert "insufficient" in message and "udt" in message and "balance" in message
+    assert_asset_state_unchanged(offckb, rpc, before)
