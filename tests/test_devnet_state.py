@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import stat
 import tomllib
 from collections.abc import Callable, Iterator
@@ -20,6 +21,7 @@ from .harness import (
     OffckbRunner,
     RpcClient,
     _configured_devnet_paths,
+    _process_group_commands,
     hex_int,
     transaction_hash_from,
     wait_until,
@@ -243,3 +245,60 @@ def test_full_clean_restores_defaults_and_removes_development_state(saved_develo
     _assert_old_transaction_cleared(state)
     assert not state.cache_path.exists(), "the old debug transaction cache survived full clean"
     state.assert_outside_files_unchanged()
+
+
+# TEST-MAP: NODE-12
+@pytest.mark.parametrize("clean_args", [(), ("-d",)], ids=["full", "data-only"])
+def test_clean_running_chain_is_rejected_without_losing_progress(
+    saved_development: SavedDevelopment, clean_args: tuple[str, ...],
+) -> None:
+    """忘记停止后台链时，清理应提示先停链并保留正在使用的开发环境。"""
+    state = saved_development
+    devnet = state.devnet
+    devnet.start()
+    configs = {name: (devnet.config_path / name).read_bytes() for name in CONFIG_FILES}
+    metadata = devnet.pid_file.read_bytes()
+    assert devnet.pgid is not None
+    processes = _process_group_commands(devnet.pgid)
+    assert devnet.pid in processes and len(processes) >= 3
+
+    try:
+        result = devnet.runner.run("clean", *clean_args, check=False, timeout_s=30)
+        # Inspect the filesystem before RPCs or teardown can mask deletion.
+        database_present = (state.data_path / "db").is_dir()
+        assert database_present, (
+            f"clean removed the running chain database; exit={result.returncode}; "
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+        )
+        for name, content in configs.items():
+            assert (devnet.config_path / name).read_bytes() == content, f"clean changed {name}"
+        assert devnet.pid_file.read_bytes() == metadata
+        state.assert_outside_files_unchanged()
+
+        assert result.returncode != 0, f"clean accepted a running chain: {result.stdout}"
+        assert not result.stdout.strip(), result.stdout
+        records = [json.loads(line) for line in result.stderr.splitlines() if line.strip()]
+        errors = [record for record in records if record.get("ok") is False]
+        assert len(errors) == 1 and errors[0].get("code"), result.stderr
+        assert re.search(r"\b(?:offckb\s+)?node\s+stop\b", errors[0].get("message", "")), result.stderr
+
+        assert devnet.rpc.ready() and devnet.proxy_rpc.ready()
+        transaction = devnet.rpc.call("get_transaction", [state.tx_hash])
+        assert transaction and transaction["tx_status"]["status"] == "committed"
+        assert transaction["transaction"] == state.transaction["transaction"]
+        _assert_chain_advances(devnet, devnet.rpc.tip())
+        assert _process_group_commands(devnet.pgid) == processes
+
+        # Reopen the database to catch deletions hidden by live handles or caches.
+        devnet.stop()
+        devnet.start()
+        restored = devnet.rpc.call("get_transaction", [state.tx_hash])
+        assert restored and restored["tx_status"]["status"] == "committed"
+        assert restored["transaction"] == state.transaction["transaction"]
+        assert devnet.rpc.call("get_block_hash", [state.tip["number"]]) == state.tip["hash"]
+    finally:
+        # A broken clean can delete the PID file while leaving the processes alive.
+        # Only after observing the outcome, stop this fixture's verified group so
+        # the ordinary fixture teardown can still finish without stale listeners.
+        if devnet.pid is not None and not devnet.pid_file.exists():
+            devnet._stop_owned_process(devnet.pid, known_pgid=devnet.pgid)

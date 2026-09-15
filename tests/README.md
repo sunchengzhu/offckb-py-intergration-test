@@ -6,16 +6,17 @@
 
 - `conftest.py`：版本配置与产物校验、命令行参数、隔离 HOME、固定端口租约和 fixture。
 - `harness.py`：CLI 执行、RPC 轮询、Indexer/cell oracle、daemon 精确归属与 teardown。
+- [fiber/](fiber/README.md)：Fiber 启动、开通道、支付与协作关闭用例，以及专属环境和 RPC 辅助代码。
 - `test_devnet_lifecycle.py`：空配置首次启动、实际 CKB 路径、ready、产块、Indexer 和 OffCKB 自行停止并清理 PID。
 - `test_node_recovery.py`：重复启动保留原开发链；错误二进制路径与真实端口冲突失败后，检查产品自行清理、冲突服务不受影响，修正后能在同一环境正常启动。
 - `test_node_stop_safety.py`：重复停止、已退出的 PID 和指向无关进程的 PID，检查停止结果、元数据及测试自建进程的响应和信号记录。
-- `test_devnet_state.py`：已完成真实转账后停止并重启，验证配置和开发进度保留；对比 `clean -d` 与完整 `clean` 的数据、配置及真实调试缓存边界，同时保护全局设置、托管二进制和目录外文件。
+- `test_devnet_state.py`：已完成真实转账后停止并重启，验证配置和开发进度保留；对比 `clean -d` 与完整 `clean` 的清理边界，验证运行中拒绝清理，同时保护配置、全局设置、托管二进制和目录外文件。
 - `test_default_node.py`：普通 `offckb node` 自行选择包默认版本的真实 CKB，初始化、提供连接地址、产块，Ctrl+C 后退出并可再次启动。
-- `test_global_settings.py`：查看默认设置、管理代理、拒绝错误输入、隔离两套用户环境；选择非默认 CKB 版本后验证新进程读取及实际 node/miner 二进制。
+- `test_global_settings.py`：查看默认设置、管理代理、拒绝错误输入、隔离两套用户环境；配置文件损坏或读写失败时保护原设置；选择非默认 CKB 版本后验证新进程读取及实际 node/miner 二进制。
 - `test_devnet_configuration.py`：批量保存选项的值和类型，拒绝非法输入、缺失或损坏文件及非终端交互；核对配置和链数据保护，并通过 `warn → info → warn` 重启验证日志生效及原交易保留。
 - `test_cli_contract.py`：帮助和版本入口、成功结果与进度的 JSON 分流、全局参数位置，以及参数解析和业务失败的输出契约与副作用。
 - `test_ckb_value_flow.py`：账户发现、余额、充值、所选账户转账与临时账户清扫；错误私钥和未充值账户失败后，核对资产保护及后续正常转账。
-- `test_udt_lifecycle.py`：通过非默认账户发行、转账和部分销毁 SUDT/xUDT，比较 CLI 余额与链上 live cells；验证自定义 args、其他持有者保护，以及非法输入或销毁量超额时资产不变。
+- `test_udt_lifecycle.py`：通过非默认账户发行、转账、部分及全额销毁 SUDT/xUDT，比较 CLI 余额与链上 live cells；验证自定义 args、其他持有者保护，以及非法输入或销毁量超额时资产不变。
 - `asset_assertions.py`：用 direct RPC 独立汇总余额，再核对 OffCKB 的资产发现、分类和过滤结果。
 - `asset_failure_support.py`：为失败路径捕获 CLI 余额、live cells 和真实代理交易记录；用 direct RPC 排除 Indexer 滞后掩盖输入被消费的情况。
 - `test_contract_deployment.py`：使用非默认账户完成普通部署、Type-ID 首次部署与升级，核对记录和 code cell 归属；损坏 Type ID 记录时保护旧合约及部署文件。
@@ -31,6 +32,16 @@
 
 `core` 表示当前本地 devnet 回归集合，P0/P1 表示评审文档中的场景优先级，两者不等同。已有升级、部分销毁等 P1 回归继续随 `make test` 执行；新增用例按用户流程补齐，不因降为 P1 而删除已有有效检查。每条用例自己准备必要状态，不依赖其他测试先运行。
 
+Fiber 用例使用独立的 `fiber` marker，需显式提供 canary 包和匹配的 CKB/FNN 工具；`FNN_BIN` 或 `--fnn-bin` 指向完整发布目录中的 `fnn`。按 [Fiber 运行配置](../config/README.md#fiber-专项) 设置后，在仓库根目录执行：
+
+```bash
+make test TESTS=tests/fiber ARGS='-m fiber'
+make test TESTS=tests/fiber/test_startup.py ARGS='-m fiber'
+make test TESTS=tests/fiber/test_channel_flow.py ARGS='-m fiber'
+```
+
+默认 `core` 集合不变；工具布局、进程隔离与执行边界见 [Fiber 测试说明](fiber/README.md)。
+
 资产和部署 CLI 用例通过 JSON 获取结果；前台默认启动、项目创建和失败交易调试使用普通文本入口，日志以文本查看为主并补充 JSON 等价读取。生成项目的脚本直接运行，测试不改写 build/deploy/test 文件；诊断用例只修改用户合约，产生可识别的成功或失败调用。项目构建、部署 fixture 可以复用准备结果；聚焦任意一条测试时，也会自动准备所需项目和链上状态。
 
 `project` marker 包括项目创建、失败交易调试和日志用例，均需预先准备原生 `CKB_DEBUGGER_BIN`；涉及构建和调用时还要安装生成项目的依赖。系统脚本用例不需要创建项目或 debugger。默认前台启动用例使用与包默认版本一致的 `DEFAULT_CKB_BIN`。项目创建后由 OffCKB 自行配置 debugger 的 PATH 入口，测试不代替产品写 debugger shim。
@@ -45,9 +56,11 @@ make test TESTS='tests/test_transaction_debugging.py tests/test_logs.py tests/te
 
 `TESTS` 也可只保留一个模块；缺少项目依赖缓存时，追加 `ARGS='--project-online'` 显式允许下载。SDK 交易辅助程序见 [fixtures 说明](../fixtures/README.md)。
 
-聚焦“继续开发与重置环境”：`make test TESTS=tests/test_devnet_state.py`。三条用例各自准备独立环境、通过 CLI 保存非默认配置并完成转账；不需要项目构建或 debugger，也不依赖其他测试先运行。
+聚焦“继续开发与重置环境”：`make test TESTS=tests/test_devnet_state.py`。各用例分别准备独立环境、通过 CLI 保存非默认配置并完成转账；不需要项目构建或 debugger，也不依赖其他测试先运行。
 
 聚焦“配置生效与版本入口”：`make test TESTS='tests/test_global_settings.py tests/test_devnet_configuration.py tests/test_cli_contract.py'`。版本选择用例需要两个真实本地 CKB：`CKB_BIN` 与包默认版本不同，`DEFAULT_CKB_BIN` 与包默认版本一致；两者都放入隔离托管目录，验证实际选中的二进制。日志配置用例不需要项目构建或 debugger。
+
+配置权限故障用例需以普通用户运行，使文件权限能够实际阻止读写；root 用户会绕过该前置条件。
 
 聚焦“启动失败后的恢复与配置保护”：`make test TESTS='tests/test_node_recovery.py tests/test_node_stop_safety.py tests/test_devnet_configuration.py'`。端口冲突和无关进程均由测试创建，失败清理在任何兜底操作前判定；批量配置检查使用已经产块并停止的真实链数据。这些场景不需要项目构建或 debugger。
 

@@ -24,6 +24,7 @@
 | 调整开发环境并继续使用 | 选择 CKB 版本后下次启动生效；调整日志配置后能看到相应变化 | [全局设置](configuration/global-settings.md)、[Devnet 配置](devnet/configuration.md) |
 | 结束工作后继续，或重新开始实验 | 停止后可重启并保留交易和配置；重置链数据时保留配置，完整重置时不误删项目文件 | [开发链启停与状态](devnet/lifecycle-state.md) |
 | 查找命令用法，或将命令接入脚本 | 帮助能找到入口，版本明确，成功与失败可判定，机器输出可解析 | [CLI 使用与输出](cli/command-contract.md) |
+| 使用本地 Fiber 环境体验通道支付 | OffCKB 配置并管理 FNN，用户可完成首次支付、继续开发或重置实验 | [Fiber devnet 测试分析](fiber/README.md)（领域地图） |
 
 ## 优先级与补齐顺序
 
