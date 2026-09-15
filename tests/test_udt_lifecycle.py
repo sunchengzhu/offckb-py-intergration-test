@@ -591,3 +591,62 @@ def test_destroy_more_than_owned_keeps_original_udt_cells_live(
     message = assert_cli_failure(result).lower()
     assert "insufficient" in message and "udt" in message and "balance" in message
     assert_asset_state_unchanged(offckb, rpc, before)
+
+
+# TEST-MAP: UDT-07
+@pytest.mark.parametrize("kind", ["sudt", "xudt"])
+def test_destroy_all_udt_clears_holder_balance(
+    devnet: Any, offckb: Any, rpc: Any, accounts: list[Any], private_key_file: Any, kind: str,
+) -> None:
+    """用户一次销毁全部代币，余额归零且另一持有者的代币不变。"""
+    holder, other = accounts[14], accounts[15]
+    type_args = _issuer_type_args(rpc, holder)
+    key_path = private_key_file(holder)
+    issued_amount, other_amount = 10_000, 2_000
+    rpc.wait_indexer()
+    holder_before = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    other_before = assert_udt_balance(offckb, rpc, other, kind, type_args)
+
+    issue = _issue(
+        offckb, key_path, kind=kind, amount=issued_amount,
+        type_args=type_args if kind == "xudt" else None,
+    )
+    issue_transaction = _wait_committed_and_indexed(rpc, _tx_hash(issue))
+    target_type = _assert_issue_transaction(
+        rpc, issue_transaction, receiver_lock=holder.lock_script,
+        type_args=type_args, amount=issued_amount,
+    )
+    transfer = _json_result(offckb.run(
+        "transfer", other.address, str(other_amount), "--network", "devnet",
+        "--udt-kind", kind, "--udt-type-args", type_args,
+        "--privkey-file", key_path, check=True,
+    ))
+    transfer_transaction = _wait_committed_and_indexed(rpc, _tx_hash(transfer))
+    _assert_transfer_transaction(
+        rpc, transfer_transaction, target_type=target_type,
+        sender_lock=holder.lock_script, receiver_lock=other.lock_script, amount=other_amount,
+    )
+    balance = assert_udt_balance(offckb, rpc, holder, kind, type_args)
+    other_before_destroy = assert_udt_balance(offckb, rpc, other, kind, type_args)
+    assert balance == holder_before + issued_amount - other_amount
+    assert balance > 0
+    assert other_before_destroy == other_before + other_amount
+    assert other_before_destroy > 0
+
+    payload = _json_result(offckb.run(
+        "udt", "destroy", str(balance), "--network", "devnet", "--udt-kind", kind,
+        "--type-args", type_args, "--privkey-file", key_path, check=True,
+    ))
+    assert payload.get("command") == "udt.destroy", payload
+    assert payload.get("network") == "devnet", payload
+    assert payload.get("kind") == kind, payload
+    assert payload.get("amount") == str(balance), payload
+    assert payload.get("typeArgs") == type_args, payload
+    destroy_transaction = _wait_committed_and_indexed(rpc, _tx_hash(payload))
+    _assert_destroy_transaction(
+        rpc, destroy_transaction, target_type=target_type, holder_lock=holder.lock_script,
+        balance_before=balance, amount=balance,
+    )
+
+    assert assert_udt_balance(offckb, rpc, holder, kind, type_args) == 0
+    assert assert_udt_balance(offckb, rpc, other, kind, type_args) == other_before_destroy

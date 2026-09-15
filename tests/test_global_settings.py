@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
+import stat
 from pathlib import Path
 
 import pytest
@@ -155,6 +157,67 @@ def test_two_user_environments_keep_independent_settings(uninitialized_devnet: D
     assert any("no proxy" in message.lower() for message in _messages(first, "config", "get", "proxy"))
     assert read_cli_settings(second) == second_effective
     assert second_file.read_bytes() == second_before
+
+
+# TEST-MAP: CFG-06
+@pytest.mark.parametrize("fault, error_stage", [
+    ("damaged", r"\b(read(?:ing)?|load(?:ing)?|pars(?:e|ing)|syntax|json|corrupt(?:ed)?)\b"),
+    ("unreadable", r"\b(read(?:ing)?|load(?:ing)?)\b"),
+    ("unwritable", r"\b(writ(?:e|ing)|sav(?:e|ing))\b"),
+], ids=["damaged", "unreadable", "unwritable"])
+@pytest.mark.parametrize("item, value", [
+    ("ckb-version", "v0.204.0"),
+    ("proxy", "http://127.0.0.1:19091"),
+], ids=["ckb-version", "proxy"])
+def test_configuration_file_failure_preserves_original_settings(
+    uninitialized_devnet: DevnetManager, fault: str, error_stage: str,
+    item: str, value: str,
+) -> None:
+    """合法修改遇到读取、解析或保存失败时明确报错，并保留原设置供恢复。"""
+    runner = uninitialized_devnet.runner
+    runner.run("config", "set", "ckb-version", "v0.203.0")
+    runner.run("config", "set", "proxy", "http://127.0.0.1:19090")
+    settings_file = _settings_file(runner)
+    file_mode = stat.S_IMODE(settings_file.stat().st_mode)
+    directory_mode = stat.S_IMODE(settings_file.parent.stat().st_mode)
+    write_probe = settings_file.parent / ".cfg-06-write-probe"
+    if fault == "damaged":
+        settings_file.write_bytes(settings_file.read_bytes() + b"\n{unfinished")
+    before = settings_file.read_bytes()
+
+    try:
+        if fault == "unreadable":
+            settings_file.chmod(file_mode & ~0o444)
+            with pytest.raises(PermissionError), settings_file.open("rb"):
+                pass
+        elif fault == "unwritable":
+            settings_file.chmod(file_mode & ~0o222)
+            settings_file.parent.chmod(directory_mode & ~0o222)
+            # Verify both direct writes and replacement through a new file are denied.
+            with pytest.raises(PermissionError), settings_file.open("r+b"):
+                pass
+            with pytest.raises(PermissionError), write_probe.open("xb"):
+                pass
+        result = runner.run("config", "set", item, value, check=False, timeout_s=15)
+    finally:
+        settings_file.parent.chmod(directory_mode)
+        if settings_file.exists():
+            settings_file.chmod(file_mode)
+        write_probe.unlink(missing_ok=True)
+
+    unchanged = settings_file.is_file() and settings_file.read_bytes() == before
+    assert unchanged, f"{fault}: config set overwrote the original settings; exit={result.returncode}"
+    assert result.returncode != 0, result.stderr
+    assert not result.stdout, result.stdout
+    events = [json.loads(line) for line in result.stderr.splitlines()]
+    errors = [event for event in events if event.get("ok") is False]
+    assert len(errors) == 1 and errors[0].get("code"), result.stderr
+    assert re.search(error_stage, errors[0]["message"], re.I), errors[0]
+    assert not any(event.get("ok") is True for event in events), result.stderr
+    assert not any(
+        re.search(r"\bsaved\b|\bsuccess(?:ful(?:ly)?)?\b|save new settings", event.get("message", ""), re.I)
+        for event in events if event.get("level") in {"info", "success"}
+    ), result.stderr
 
 
 # TEST-MAP: CFG-02

@@ -38,6 +38,7 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 | `OFFCKB_REF` | `--offckb-ref` | 覆盖 `offckb.toml` 中的 `latest`、分支、tag、commit 或 `working-tree` |
 | `CKB_BIN` | `--ckb-bin` | 指定本地 CKB 二进制；未设置时尝试产品源码同级的 `ckb/target/release/ckb` |
 | `DEFAULT_CKB_BIN` | `--default-ckb-bin` | 默认启动及版本选择对照使用的真实 CKB，版本必须与被测包的默认版本一致；未设置时复用 `CKB_BIN` 并检查版本 |
+| `FNN_BIN` | `--fnn-bin` | Fiber 专项使用的真实 FNN；指向完整发布目录中的 `fnn`，同级须保留 `config/testnet/config.yml`；测试放入隔离托管目录后由 OffCKB 选择 |
 | `CKB_DEBUGGER_BIN` | `--ckb-debugger-bin` | 项目及合约调试、日志用例使用的本地原生 `ckb-debugger`；未设置时从 `PATH` 查找，复制到隔离工具目录使用 |
 | `OFFCKB_SOURCE` | `--offckb-source` | 指定复用的本地 Git 仓库；自动查找 `source/offckb/`、`../offckb/`；该路径不决定分支版本 |
 | `OFFCKB_PACKAGE` | `--offckb-package` | 验收已有 `.tgz`，跳过源码打包；`make prepare` 只准备 Python 环境 |
@@ -60,6 +61,20 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 生成项目的依赖与 CLI 自身不同。项目用例默认设置 `npm_config_offline=true`，通过 `PNPM_STORE_DIR` / `PNPM_CACHE_DIR` 复用 pnpm 缓存；OffCKB 的 HOME/XDG 仍保持隔离。首次缺少项目依赖时，显式运行 `make test TESTS=tests/test_project_scaffolding.py ARGS='--project-online'` 允许下载并填充缓存，该次项目测试带 `network` marker，随后恢复普通 `make test`。只选择 `network` marker 本身不会授权联网，必须提供 `--project-online`。
 
 直接提供 `OFFCKB_PACKAGE` 或 `OFFCKB_ENTRY` 时，它们优先于版本配置。tarball 显示自身的包版本和 SHA256，不附加无依据的 Git commit；entry 明确显示为调试入口。版本配置本身不依赖 `make`，直接 pytest 也读取 `offckb.toml`，但本机的 `local.mk` 仅由 Makefile 读取。
+
+## Fiber 专项
+
+[tests/fiber/](../tests/fiber/README.md) 使用 `0.5.0-canary-ee0ad6b`、CKB `0.208.0` 和 FNN `0.9.0`。提前准备 canary tarball、CLI 依赖缓存和两个真实工具；FNN 保留完整发布目录。首次创建 Python 环境可执行 `make prepare OFFCKB_PACKAGE=/absolute/path/to/offckb-cli-0.5.0-canary-ee0ad6b.tgz`。
+
+```bash
+make test TESTS=tests/fiber ARGS='-m fiber' \
+  OFFCKB_PACKAGE=/absolute/path/to/offckb-cli-0.5.0-canary-ee0ad6b.tgz \
+  CKB_BIN=/absolute/path/to/ckb-0.208.0/ckb \
+  DEFAULT_CKB_BIN=/absolute/path/to/ckb-0.208.0/ckb \
+  FNN_BIN=/absolute/path/to/fnn-0.9.0/fnn
+```
+
+这些值也可放入忽略的 `config/local.mk`；直接 pytest 则使用对应的 `--offckb-package`、`--ckb-bin`、`--default-ckb-bin`、`--fnn-bin` 参数，并指定 `-m fiber tests/fiber`。`FNN_BIN` 仅供测试准备默认托管工具，不向产品命令附加版本或二进制覆盖参数。缺少工具时明确失败，Fiber 用例不下载 CKB/FNN；默认 `latest` 配置和 `core` 运行集合不变。
 
 ## 聚焦和诊断
 

@@ -2,3 +2,11 @@
 - model: GPT-5 | cases: 首期实现范围、OBS-01 至 OBS-05 | feedback: 优先做核心流程吧
 - model: unavailable | cases: 全工程测试范围 | feedback: 你能帮我review一下现有用例吗 其实是要测offckb框架功能 而不是ckb本身的功能 别聚焦错了 这块很重要 可以多花点token做
 - model: unavailable | cases: 全工程用户场景、优先级与文档表达 | feedback: 好的 我觉得应该更贴近普通用户的使用场景 不是为了测试而测试 普通用户更想利用offckb去快速上手ckb的功能 你再完善一下用例场景文档吧（不是代码哦）
+- model: unavailable | cases: Fiber 领域地图：结束通道实验 | feedback: 结束通道实验感觉也是p0级别的
+- model: unavailable | cases: Fiber 测试分析文档表达 | feedback: 下一门的翻译好怪啊 改一下
+- model: unavailable | cases: PR 测试分析的分类与关注程度 | feedback: 这个文档感觉可以把pr分一下类 一些pr不是功能修改的 只是为了版本修改提的 可以降低其重要性 你要做一下区分 不然不清晰
+- model: unavailable | cases: PR 506 测试范围 | feedback: pr 506是他自己改单测的 怎么我们也要关注 这个不在测试范围内吧 你评估一下
+- model: unavailable | cases: PR 505 与分支同步 PR 的分类 | feedback: 505是不是可以跟507、509、511归为一类好点
+- model: unavailable | cases: PR 508 与整体分类一致性 | feedback: 那508呢 难道不是包版本的维护 你自己在检查一下
+- model: unavailable | cases: Fiber 测试分析与 PR 分类的范围一致性 | feedback: 测试分析不需要相应调整吧
+- model: unavailable | cases: Fiber 全领域用例完整性与评审推进顺序 | feedback: 这五条是可以的 但是为什么每继续做剩下的测试分析的用例的补充 我意思就是你的用例不够完整 这个难道是ai-test-agent规范要求的吗

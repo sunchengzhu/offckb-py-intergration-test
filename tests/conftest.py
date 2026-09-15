@@ -166,6 +166,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption("--startup-timeout", action="store", type=float, default=120.0)
     group.addoption(
+        "--fnn-bin", default=os.environ.get("FNN_BIN"),
+        help="Real FNN binary from its release directory (including config/testnet/config.yml); Fiber tests never download it",
+    )
+    group.addoption(
         "--default-ckb-bin", default=os.environ.get("DEFAULT_CKB_BIN"),
         help="Real CKB binary matching the package default; falls back to --ckb-bin",
     )

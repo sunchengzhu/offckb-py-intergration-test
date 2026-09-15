@@ -695,6 +695,9 @@ def _path_aliases(value: str | Path) -> set[str]:
 
 
 def _command_references_path(command: str, value: str | Path) -> bool:
+    # pnpm's executable shim invokes node via .bin/../.pnpm; compare that
+    # spelling with the same installed file without splitting paths with spaces.
+    command = command.replace("/node_modules/.bin/../", "/node_modules/")
     return any(alias in command for alias in _path_aliases(value))
 
 

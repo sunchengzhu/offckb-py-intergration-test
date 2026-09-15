@@ -46,6 +46,14 @@ make test TESTS=tests/test_devnet_lifecycle.py
 
 `TESTS` 也接受 pytest node ID，额外参数通过 `ARGS` 传入。已有发布包验收、调试入口、依赖缓存、耗时和仅收集用例等选项统一见 [运行配置](config/README.md)。
 
+Fiber 专项集中在 [tests/fiber/](tests/fiber/README.md)，验证启动、开通道、支付与协作关闭。本轮使用指定 canary 包、CKB `0.208.0` 和完整 FNN `0.9.0` 发布目录，通过 `FNN_BIN` 或 `--fnn-bin` 提供 FNN 路径。按 [Fiber 运行配置](config/README.md#fiber-专项) 准备包和工具后执行：
+
+```bash
+make test TESTS=tests/fiber ARGS='-m fiber'
+```
+
+默认 `make test` 仍选择既有 `core` 集合，版本配置仍为 `latest`；Fiber 通过显式参数单独选择。
+
 ## 目录与源码
 
 ```text
@@ -54,6 +62,7 @@ project/
 └── offckb-py-intergration-test/   # 本测试仓库
     ├── reviews/                 # 中文评审用例
     ├── tests/                   # pytest 用例与运行设施
+    │   └── fiber/               # Fiber 专项用例与运行说明
     ├── scripts/                 # 版本准备与 TEST-MAP 检查工具
     ├── Makefile                 # prepare / test 统一入口
     ├── config/                  # offckb.toml 版本配置、本机配置示例
