@@ -100,6 +100,8 @@ python3 scripts/probe_node_stop.py \
 
 终端会显示临时目录及 `result.json` 路径。结果包含包版本、SHA256、运行环境、daemon 的真实 argv、停止结果和清理状态；`start.json`、`stop.json` 保存对应 CLI 输出。异常后只清理能通过本次隔离路径及启动时间确认归属的进程。现有 CKB 的目录和端口不会被用于本次测试。向上游报告时仅摘录必要证据，不默认提交整个目录。
 
+需要核实额外 Node 参数是否会导致停止失败时，分别追加 `--launch-mode baseline`、`--launch-mode cli-options`、`--launch-mode env-options` 运行三次。命令行方式设置 `--no-opt --require <观察脚本>`；环境变量方式设置 `NODE_OPTIONS="--require <观察脚本>"`（Node 不允许在 `NODE_OPTIONS` 中设置 `--no-opt`）。观察脚本只记录进程参数，不修改产品代码、进程启动方法或 PID 文件。输出的 `daemon_script_index` 来自 Linux `/proc`，`daemon_preload` 可确认环境变量中的预加载确实在 daemon 内执行。父 CLI 携带参数不代表 daemon 也继承了参数，必须根据实际记录判断。只有 `identity_rejected: true` 才是本次调查的同类拒绝停止；其他失败需另查原因。
+
 成功后临时运行目录自动删除；失败时输出保留路径，包含 artifact 版本与 SHA、命令输出、daemon/node/miner/proxy 日志和 RPC 快照。加 `--keep-runtime` 可在成功后也保留目录。
 
 ## 产品内部测试与评审

@@ -72,6 +72,8 @@ def main():
     parser.add_argument("--offckb-package", type=Path, required=True)
     parser.add_argument("--ckb-bin", type=Path, required=True)
     parser.add_argument("--node-bin", default="node")
+    parser.add_argument("--launch-mode", choices=("baseline", "cli-options", "env-options"),
+                        default="baseline", help="Compare ordinary Node startup methods")
     args = parser.parse_args()
     if platform.system() != "Linux":
         parser.error("Run this diagnostic on native Linux (no Docker required).")
@@ -89,7 +91,21 @@ def main():
         path.mkdir(mode=0o700)
         env[variable] = str(path)
     env["LC_ALL"] = "C"
-    report = {"kernel": platform.uname()._asdict(), "package_sha256": hashlib.sha256(package.read_bytes()).hexdigest()}
+    report = {"kernel": platform.uname()._asdict(), "package_sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
+              "launch_mode": args.launch_mode}
+    preload_log = root / "preload-observations.jsonl"
+    preload = root / "observe-startup.cjs"
+    # This observer only records the runtime's public state. It does not patch
+    # spawn, execPath, argv, PID metadata or any OffCKB implementation.
+    preload.write_text(
+        "require('node:fs').appendFileSync(" + json.dumps(str(preload_log)) + ","
+        "JSON.stringify({pid:process.pid,execArgv:process.execArgv,argv:process.argv,"
+        "nodeOptions:process.env.NODE_OPTIONS ?? null})+'\\n');\n"
+    )
+    node_flags = ["--no-opt", "--require", str(preload)]
+    if args.launch_mode == "env-options":
+        # Node permits --require here but rejects --no-opt in NODE_OPTIONS.
+        env["NODE_OPTIONS"] = "--require " + json.dumps(str(preload))
     owned = {}
     ports = []
     reservations = []
@@ -107,7 +123,8 @@ def main():
         return result
 
     def call(label, *arguments):
-        return run(label, [node, str(cli), "--json", *arguments])
+        flags = node_flags if args.launch_mode == "cli-options" else []
+        return run(label, [node, *flags, str(cli), "--json", *arguments])
 
     def remember_owned():
         # An immutable start tick prevents signalling a reused PID. Every member
@@ -206,10 +223,22 @@ def main():
         if started["exit_code"] != 0 or pid is None:
             raise RuntimeError("Daemon startup failed; inspect start.json")
         report["before"] = inspect(pid)
+        report["daemon_argv"] = report["before"]["argv"] if report["before"] else None
+        report["daemon_script_index"] = (report["daemon_argv"].index(str(cli))
+                                         if report["daemon_argv"] and str(cli) in report["daemon_argv"] else None)
+        observations = [json.loads(line) for line in preload_log.read_text().splitlines()] if preload_log.exists() else []
+        report["preload_observations"] = observations
+        report["daemon_preload"] = next((item for item in observations if item["pid"] == pid), None)
+        if args.launch_mode == "env-options" and report["daemon_preload"] is None:
+            raise RuntimeError("Invalid experiment: NODE_OPTIONS preload did not run in daemon")
+        if args.launch_mode == "cli-options" and not observations:
+            raise RuntimeError("Invalid experiment: CLI preload did not run")
         if not wait_for(lambda: rpc(http) is not None and rpc(proxy) is not None):
             raise RuntimeError("RPC/proxy readiness timeout")
         report["rpc_before"] = [rpc(http), rpc(proxy)]
         stopped = call("stop", "node", "stop")
+        report["stop_exit_code"] = stopped["exit_code"]
+        report["identity_rejected"] = "does not appear to be the offckb daemon" in stopped["stderr"]
         remember_owned()
         report["after"] = inspect(pid)
         report["rpc_after"] = [rpc(http), rpc(proxy)]
@@ -243,7 +272,11 @@ def main():
         if report["owned_processes_remaining"]:
             report["passed"] = False
         (root / "result.json").write_text(json.dumps(report, indent=2))
-        print(json.dumps({k: report.get(k) for k in ("passed", "package_version", "node_version", "ckb_version", "ports", "error", "owned_processes_remaining")}, indent=2))
+        print(json.dumps({k: report.get(k) for k in (
+            "launch_mode", "passed", "package_version", "node_version", "ckb_version", "ports",
+            "daemon_argv", "daemon_script_index", "daemon_preload", "stop_exit_code", "identity_rejected",
+            "error", "fallback_cleanup", "owned_processes_remaining",
+        )}, indent=2))
         print(f"Evidence: {root / 'result.json'}")
     return 0 if report["passed"] else 1
 
