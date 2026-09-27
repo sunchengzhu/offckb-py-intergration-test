@@ -1,0 +1,26 @@
+- model: unavailable | cases: Fiber UDT 正常主流程 | feedback: 这个是最正常的主流程吧 你没覆盖吗
+- model: unavailable | cases: Fiber UDT 正常主流程 | feedback: 是的 这个要优先补一下
+- model: unavailable | cases: Fiber 全部用例的 FNN 版本 | feedback: 你需要改测试框架让所有用例都用上最新的fnn包
+- model: unavailable | cases: Fiber FNN 版本选择的前提 | feedback: 我需要确认的是 offckb是否原生支持指定fnn的版本 如果不是的话 我们再想想要不要更新fnn版本
+- model: unavailable | cases: Fiber UDT 场景与上游报告 | feedback: 你可能忘了我之前的原则 就是fiber主要在用xudt(官方给的例子就是xudt 这个你可以确认一下） 所以描述问题和日志 都尽量用xudt 然后sudt提一嘴就行
+- model: unavailable | cases: Fiber 上游缺陷版本验收 | feedback: 然后0.9.0也只提一下就行 测试当然要按照最新的正式版来测 纠结旧版本干嘛 offckb默认是0.9.0 但别影响fiber的bug这边的验收
+- model: unavailable | cases: Fiber xUDT 上游报告场景代表性 | feedback: 对 还是按照普遍现象来 你可以说多个正常大小的输入合计容量足够 会触发这个缺陷 然后说补充说明可以说单个大容量 cell也会又这个问题
+- model: unavailable | cases: Fiber xUDT 上游报告背景说明 | feedback: 这个感觉也是issue能让人看懂的背景信息 放进md里面更好吧
+- model: unavailable | cases: Fiber xUDT 上游报告背景表述 | feedback: 不用很生硬的说 你可以说因为我这6个udt cell超过了多少多少的要求 所以不需要额外的ckb
+- model: unavailable | cases: Fiber xUDT 上游报告标题 | feedback: 这个标题很奇怪 怎么叫正常 不加多余描述好点吧 然后我之前也跟你说过的 中文标题最好没有逗号
+- model: unavailable | cases: Fiber xUDT 上游报告证据引用 | feedback: 这个最好也给出超链接 链接到出处
+- model: unavailable | cases: Fiber xUDT 上游报告最简复现 | feedback: 最简单且比较普遍的复现场景应该是出资方两个udt cell 接受方两个udt cell吧
+- model: unavailable | cases: Fiber xUDT 上游报告最简复现 | feedback: 是的 你要用最小化的udt cell（当然是正常ckb容量的udt cell）去复现这个问题 才能更好的说明这个问题
+- model: unavailable | cases: Fiber xUDT 上游报告篇幅与结构 | feedback: 补充：FNN `0.9.0` 也曾观察到相同失败。 这个可以直接删了  单个大容量 xUDT cell 也会触发可以写的精简一点 我感觉整个issue的篇幅还是有点长了 可以合并一些重复的地方 还有测试环境信息 有多行 可以改少点 诸如此类的 你优化一下
+- model: unavailable | cases: Fiber xUDT 上游报告概述 | feedback: 这两句能不能合并到一起说 然后版本号不用在这里给出
+- model: unavailable | cases: Fiber xUDT 上游报告概述 | feedback: 这个也要说吗
+- model: unavailable | cases: Fiber xUDT 上游报告概述 | feedback: 讲得太复杂了 你可以说两个142ckb的cell然后括号说明一下这个是udt用的最低的ckb的量 最好超链接给出出处
+- model: unavailable | cases: Fiber xUDT 上游报告独立提报理由 | feedback: 之前这块写得挺好的 改回来 不需要为了省篇幅写得这么简单
+- model: unavailable | cases: Fiber xUDT 上游报告容量出处与术语 | feedback: 你给的不是142ckb的链接啊 另外「本例」我也听不懂
+- model: unavailable | cases: Fiber xUDT 上游报告容量出处与术语 | feedback: 你找的有问题 应该找xudt的出处 注释也该是「xUDT cell 的最低存储容量」
+- model: unavailable | cases: Fiber xUDT 上游报告容量出处与术语 | feedback: 你可以说某某官方项目 比如offckb创建出来的就是142ckb的xudt cell
+- model: unavailable | cases: Fiber xUDT 上游报告容量说明 | feedback: 直接改成（xUDT cell 的最低存储容量）不需要额外说明 不需要给超链接
+- model: unavailable | cases: Fiber xUDT 上游报告容量引用精度 | feedback: 1. **180 不是该链接直接给出的常量。** 链接展示的是派生公式，180 是本配置（57 字节 commitment lock args + xUDT type）下的结果。换锁脚本这个数就变——它既不是硬编码常量，链接本身也没写出 180。文中"每方预留 180 CKB"若被读者当成代码常量去 grep，会找不到。 2. **代码实际强制的下限是 179，不是 180。** `check_open_channel_parameters()`（`fee.rs` L230-236、L263-270）比较的对象是 `occupied_capacity`（179 CKB），不是 `reserved_capacity`（180）；1 CKB 的 shutdown fee 是在这层校验之外单独加的。也就是说，写"单个 142 CKB 不足以支付 180 CKB 预留"在数值上没错，但精确说法是"低于 179 CKB 的 occupied capacity 校验"。这不影响结论（142 < 179 < 180），只是引用精度问题。
+- model: unavailable | cases: Fiber xUDT 上游报告复现证据 | feedback: 链接和数字部分可以定稿；但**因果叙述不要基于推断**。发布前用 `batches=2`、`initiator=5000`、`acceptor=10000`、`funding_fee_rate=2000` 在 **0.9.1** 上重跑一次，并用 debug 日志（`fnn::ckb::funding::funding_tx` 的 `Funding tx balanced` / `final tx_builder`）把该交易的 `inputs` / `outputs` / `cell_deps` 原文贴进 issue。若结果仍是 READY（如 group D 所示），则本条不成立；若确实 `ScriptNotFound`，那份原文才是唯一能同时支撑"4 输入 / 0 普通 CKB / 3 输出"和"缺 secp dep"的证据。
+- model: unavailable | cases: Fiber xUDT 上游报告容量引用精简 | feedback: 这两个证据都需要给吗 还是给一个就行
+- model: unavailable | cases: Fiber UDT 上游报告中文表述 | feedback: 这又是啥东西 能不能核对一下中文版的说法 不能翻译腔 需要更地道一点的翻译

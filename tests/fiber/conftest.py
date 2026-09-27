@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ import pytest
 from tests.conftest import _empty_user_env
 from tests.harness import Account, DevnetManager, OffckbRunner, RpcClient
 from .environment import FIBER_MODES, FiberEnvironment, prepare_managed_tools
+from .udt_flows import KnownUdtFundingDefect
 
 
 @pytest.fixture(scope="session")
@@ -47,7 +49,7 @@ def fiber_environment(
 ):
     """Fresh user state per context, sharing only the verified installed CLI and port lease."""
     @contextmanager
-    def create(mode: str):
+    def create(mode: str, *, start: bool = True, prepare_fnn: bool = True):
         if mode not in FIBER_MODES:
             raise ValueError(f"Unknown Fiber mode: {mode}")
         devnet_manager.close()
@@ -58,6 +60,8 @@ def fiber_environment(
         managed_ckb, managed_fnn, config_path = prepare_managed_tools(
             root, env, package_default_settings, default_ckb_bin, fnn_bin,
         )
+        if not prepare_fnn:
+            shutil.rmtree(managed_fnn.parent)
         timeout_s = pytestconfig.getoption("--tx-timeout")
         runner = OffckbRunner(
             offckb.command, cli_entry=offckb.cli_entry, env=env,
@@ -76,12 +80,16 @@ def fiber_environment(
             fnn_version=package_default_settings["bins"]["defaultFnnVersion"],
         )
         try:
-            instance.start()
+            if start:
+                instance.start()
             yield instance
         except BaseException as error:
             try:
                 instance.close()
             except BaseException as cleanup_error:
+                if isinstance(error, KnownUdtFundingDefect):
+                    # A known funding issue must not hide a separate cleanup failure.
+                    raise cleanup_error from error
                 error.add_note(f"Fiber cleanup also failed: {cleanup_error}")
             raise
         else:

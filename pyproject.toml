@@ -24,4 +24,5 @@ markers = [
   "project: generated project creation, build, deployment and example tests",
   "network: explicitly enabled external downloads, excluded from offline runs",
   "fiber: local Fiber devnet flows using prepared CKB and FNN release tools",
+  "tty: explicitly enabled real terminal interaction tests",
 ]

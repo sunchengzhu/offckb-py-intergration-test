@@ -46,10 +46,10 @@ make test TESTS=tests/test_devnet_lifecycle.py
 
 `TESTS` 也接受 pytest node ID，额外参数通过 `ARGS` 传入。已有发布包验收、调试入口、依赖缓存、耗时和仅收集用例等选项统一见 [运行配置](config/README.md)。
 
-Fiber 专项集中在 [tests/fiber/](tests/fiber/README.md)，验证启动、开通道、支付与协作关闭。本轮使用指定 canary 包、CKB `0.208.0` 和完整 FNN `0.9.0` 发布目录，通过 `FNN_BIN` 或 `--fnn-bin` 提供 FNN 路径。按 [Fiber 运行配置](config/README.md#fiber-专项) 准备包和工具后执行：
+Fiber 专项集中在 [tests/fiber/](tests/fiber/README.md)，覆盖启动、通道支付与关闭、停止与重启、清理、配置、异常恢复、UDT 和旧版本升级。本轮使用指定 canary 包、CKB `0.208.0` 和完整 FNN `0.9.0` 发布目录，通过 `FNN_BIN` 或 `--fnn-bin` 提供 FNN 路径。按 [Fiber 运行配置](config/README.md#fiber-专项) 准备包和工具后执行：
 
 ```bash
-make test TESTS=tests/fiber ARGS='-m fiber'
+make test TESTS=tests/fiber ARGS='-m "fiber and not network and not tty"'
 ```
 
 默认 `make test` 仍选择既有 `core` 集合，版本配置仍为 `latest`；Fiber 通过显式参数单独选择。
@@ -84,6 +84,21 @@ project/
 每次运行建立独立 HOME、XDG 根目录、临时 npm prefix 和 OffCKB settings；子进程只继承运行所需的环境变量白名单。签名使用私钥文件、`OFFCKB_PRIVATE_KEY` 或生成项目的 `.env`，日志做脱敏，不使用开发者真实的 OffCKB 数据。
 
 固定端口由跨进程文件锁保护；检测到已有服务时会报错退出。测试优先通过产品 `node stop` 清理所属服务，确认进程和端口退出后结束。
+
+### Linux 真机 node stop 专项
+
+服务器已有 CKB 服务占用默认端口时，使用 [专项诊断脚本](scripts/probe_node_stop.py)。这是一次性问题调查入口，不增加验收用例，也不改变完整套件的固定端口要求。需要 Python 3.11+、Node.js 20+ 和 Linux 本地 CKB `0.208.0` 二进制；不需要 Docker、FNN 或产品源码。
+
+```bash
+npm pack @offckb/cli@0.5.0-canary-ee0ad6b --pack-destination /tmp
+python3 scripts/probe_node_stop.py \
+  --offckb-package /tmp/offckb-cli-0.5.0-canary-ee0ad6b.tgz \
+  --ckb-bin /absolute/path/to/ckb
+```
+
+脚本将原始发布包解压到本次独立 prefix，执行其已打包的 CLI；建立全新的 HOME/XDG 目录，仅修改隔离目录内的 devnet 配置，自动选择四个空闲端口。它通过 OffCKB 启动 daemon，确认直连 RPC 和 proxy 就绪，再执行 `node stop` 并检查进程、PID 文件和端口。正常停止返回 `0`；启动或停止异常返回 `1`，不会将先前观察到的拒绝停止视为通过。
+
+终端会显示临时目录及 `result.json` 路径。结果包含包版本、SHA256、运行环境、daemon 的真实 argv、停止结果和清理状态；`start.json`、`stop.json` 保存对应 CLI 输出。异常后只清理能通过本次隔离路径及启动时间确认归属的进程。现有 CKB 的目录和端口不会被用于本次测试。向上游报告时仅摘录必要证据，不默认提交整个目录。
 
 成功后临时运行目录自动删除；失败时输出保留路径，包含 artifact 版本与 SHA、命令输出、daemon/node/miner/proxy 日志和 RPC 快照。加 `--keep-runtime` 可在成功后也保留目录。
 

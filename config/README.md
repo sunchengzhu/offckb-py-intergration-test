@@ -67,14 +67,16 @@ Makefile 读取此文件，并把下表中的环境变量传给 pytest；直接�
 [tests/fiber/](../tests/fiber/README.md) 使用 `0.5.0-canary-ee0ad6b`、CKB `0.208.0` 和 FNN `0.9.0`。提前准备 canary tarball、CLI 依赖缓存和两个真实工具；FNN 保留完整发布目录。首次创建 Python 环境可执行 `make prepare OFFCKB_PACKAGE=/absolute/path/to/offckb-cli-0.5.0-canary-ee0ad6b.tgz`。
 
 ```bash
-make test TESTS=tests/fiber ARGS='-m fiber' \
+make test TESTS=tests/fiber ARGS='-m "fiber and not network and not tty"' \
   OFFCKB_PACKAGE=/absolute/path/to/offckb-cli-0.5.0-canary-ee0ad6b.tgz \
   CKB_BIN=/absolute/path/to/ckb-0.208.0/ckb \
   DEFAULT_CKB_BIN=/absolute/path/to/ckb-0.208.0/ckb \
   FNN_BIN=/absolute/path/to/fnn-0.9.0/fnn
 ```
 
-这些值也可放入忽略的 `config/local.mk`；直接 pytest 则使用对应的 `--offckb-package`、`--ckb-bin`、`--default-ckb-bin`、`--fnn-bin` 参数，并指定 `-m fiber tests/fiber`。`FNN_BIN` 仅供测试准备默认托管工具，不向产品命令附加版本或二进制覆盖参数。缺少工具时明确失败，Fiber 用例不下载 CKB/FNN；默认 `latest` 配置和 `core` 运行集合不变。
+这些值也可放入忽略的 `config/local.mk`；直接 pytest 则使用对应的 `--offckb-package`、`--ckb-bin`、`--default-ckb-bin`、`--fnn-bin` 参数，并指定 `-m 'fiber and not network and not tty' tests/fiber`。`FNN_BIN` 提供真实工具，默认启动场景使用托管位置；专门的版本和路径选择场景使用对应公开参数。缺少工具时明确失败；默认 `latest` 配置和 `core` 运行集合不变。
+
+升级场景另需 `OFFCKB_LEGACY_PACKAGE` 指向真实 `0.4.13` 发布包。网络安装场景使用 `-m 'fiber and network' --fiber-network`，终端交互场景使用 `-m 'fiber and tty' --fiber-tty`；具体要求见 [Fiber 专项运行说明](../tests/fiber/README.md)。
 
 ## 聚焦和诊断
 

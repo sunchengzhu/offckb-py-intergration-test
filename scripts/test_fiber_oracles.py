@@ -3,16 +3,115 @@
 from __future__ import annotations
 
 import copy
+import selectors
+import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tests.harness import CKB, Account, OffckbRunner, RpcClient, _command_references_path  # noqa: E402
+from tests.harness import (  # noqa: E402
+    CKB, Account, OffckbRunner, RpcClient, _command_references_path,
+    _process_command, _process_group_commands,
+)
 from tests.fiber.environment import FiberEnvironment  # noqa: E402
 from tests.fiber.flows import Channel, assert_close_amounts, unpack_outpoint  # noqa: E402
+from tests.fiber import udt_flows  # noqa: E402
+
+
+class ProcessInspectionTests(unittest.TestCase):
+    def test_long_owned_command_is_not_truncated(self):
+        marker = "offckb-owned-" + "x" * 400
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import os,sys; print(os.getpid(), flush=True); sys.stdin.read()", marker],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True,
+        )
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                self.assertTrue(selector.select(timeout=5), "owned child did not become ready")
+            self.assertEqual(int(process.stdout.readline()), process.pid)
+            self.assertIn(marker, _process_command(process.pid))
+            self.assertIn(marker, _process_group_commands(process.pid)[process.pid])
+        finally:
+            process.communicate(timeout=5)
+
+
+class UdtFundingOracleTests(unittest.TestCase):
+    """Non-default funding must pass, while incorrect public observations fail."""
+
+    def observe(self, *, remote=(10_000, 5_000), total=15_000, balances=(5_000, 0)):
+        script = {"code_hash": "0x" + "aa" * 32, "hash_type": "type", "args": "0x" + "bb" * 32}
+        point = {"tx_hash": "0x" + "11" * 32, "index": "0x0"}
+        pair = tuple({
+            "state": {"state_name": "ChannelReady"},
+            "local_balance": hex(local), "remote_balance": hex(other),
+            "funding_udt_type_script": script, "channel_outpoint": point,
+        } for local, other in zip((5_000, 10_000), remote, strict=True))
+        pending = {
+            "channel_id": "temporary", "is_acceptor": True,
+            "state": {"state_name": "NegotiatingFunding"},
+            "funding_udt_type_script": script, "remote_balance": hex(5_000),
+            "channel_outpoint": None,
+        }
+        replies = {
+            "node_info": {"pubkey": "peer"},
+            "open_channel": {"temporary_channel_id": "temporary"},
+            "list_channels": {"channels": [pending]},
+            "accept_channel": {"channel_id": "final"},
+        }
+        nodes = tuple(Mock() for _ in range(2))
+        for node in nodes:
+            node.call.side_effect = lambda method, *_: replies[method]
+        transaction = {"tx_status": {"block_number": "0x1"}, "transaction": {
+            "outputs": [{"type": script}],
+            "outputs_data": ["0x" + total.to_bytes(16, "little").hex()],
+        }}
+        rpc = Mock()
+        rpc.wait_transaction.return_value = transaction
+        env = SimpleNamespace(fnn=nodes, accounts=list(range(5)), rpc=rpc, runner=Mock(), timeout_s=1)
+        asset = SimpleNamespace(kind="sudt", script=script, configs=())
+        with ExitStack() as stack:
+            for name, replacement in {
+                "list_channels": Mock(return_value=[]),
+                "channel_pair": Mock(return_value=pair),
+                "settled": Mock(return_value=True),
+                "unpack_outpoint": Mock(return_value=point),
+                "generated_configs": Mock(return_value=()),
+                "assert_udt_balance": Mock(side_effect=balances),
+                "wait_until": lambda predicate, **_: self.assertTrue(predicate()),
+            }.items():
+                stack.enter_context(patch.object(udt_flows, name, replacement))
+            return udt_flows.open_udt_channel(env, asset, funded_units=(5_000, 10_000))
+
+    def test_full_acceptor_funding_uses_requested_amounts(self):
+        self.assertEqual(self.observe().principal, (5_000, 10_000))
+
+    def test_stale_default_amounts_are_rejected(self):
+        for wrong in ({"remote": (3_000, 5_000)}, {"total": 8_000}, {"balances": (5_000, 7_000)}):
+            with self.subTest(wrong=wrong), self.assertRaises(AssertionError):
+                self.observe(**wrong)
+
+    def test_only_reported_funding_signatures_are_expected(self):
+        classify = udt_flows.reported_funding_issue
+        change = "Peer sent us an invalid funding tx"
+        fee = "PoolRejectedTransactionByMinFeeRate: LowFeeRate"
+        self.assertTrue(classify(change, (5_000, 3_000), None).endswith("/1667"))
+        self.assertTrue(classify(fee, (5_000, 10_000), None).endswith("/1663"))
+        for log, amounts, rate in (
+            (change, (5_000, 10_000), None),
+            (change, (5_000, 0), None),
+            (fee, (5_000, 10_000), 2000),
+            ("connection refused", (5_000, 3_000), None),
+            ("ScriptNotFound " + change, (5_000, 3_000), None),
+        ):
+            with self.subTest(log=log, amounts=amounts, rate=rate):
+                self.assertIsNone(classify(log, amounts, rate))
 
 
 class _ConsumedFundingCell:

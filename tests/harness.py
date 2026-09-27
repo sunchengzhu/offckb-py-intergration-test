@@ -703,7 +703,7 @@ def _command_references_path(command: str, value: str | Path) -> bool:
 
 def _process_group_commands(pgid: int) -> dict[int, str]:
     completed = subprocess.run(
-        ["ps", "-axo", "pid=,pgid=,command="],
+        ["ps", "-ww", "-axo", "pid=,pgid=,command="],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1158,7 +1158,7 @@ def _process_alive(pid: int) -> bool:
 
 def _process_command(pid: int) -> str | None:
     completed = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "command="],
+        ["ps", "-ww", "-p", str(pid), "-o", "command="],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

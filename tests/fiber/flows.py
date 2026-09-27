@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Protocol
 
 from ..harness import (
-    CKB, Account, OffckbRunner, RpcClient, hex_int, rpc_script, transaction_hash_from,
+    CKB, Account, OffckbRunner, RpcClient, hex_int, rpc_script, transaction_hash_from, wait_until,
 )
 
 
@@ -40,6 +40,7 @@ class Channel:
     initial: tuple[dict[str, Any], dict[str, Any]]
     paid: int = 0
     closed: bool = False
+    last_payment_hash: str | None = None
 
 
 def outpoint_key(point: dict[str, Any]) -> tuple[str, int]:
@@ -133,6 +134,65 @@ def open_ckb_channel(env: FiberEnvironment) -> Channel:
     return Channel(final_id, temporary_id, outpoint, funding, principal, pair)
 
 
+def open_manually_accepted_ckb_channel(
+    env: FiberEnvironment, initiator_ckb: int, acceptor_ckb: int,
+) -> Channel:
+    """Both sides fund one CKB channel; the acceptor contributes through accept_channel."""
+    assert all(not list_channels(rpc) for rpc in env.fnn), "a previous active channel would make routing ambiguous"
+    info = [rpc.call("node_info") for rpc in env.fnn]
+    response = env.fnn[0].call("open_channel", [{"pubkey": info[1]["pubkey"], "funding_amount": hex(initiator_ckb)}])
+    temporary_id = response["temporary_channel_id"]
+    pending = None
+
+    def request_visible() -> bool:
+        nonlocal pending
+        matches = [c for c in env.fnn[1].call("list_channels", [{"only_pending": True}])["channels"]
+                   if c["channel_id"] == temporary_id]
+        assert len(matches) <= 1
+        pending = matches[0] if matches else None
+        return pending is not None
+
+    wait_until(request_visible, timeout_s=env.timeout_s, description="receiver to expose the pending CKB request")
+    assert pending is not None and pending["is_acceptor"] is True
+    assert pending["state"]["state_name"] == "NegotiatingFunding"
+    assert pending["funding_udt_type_script"] is None
+    assert pending["channel_outpoint"] is None
+    # The initiator's own view carries its pledge; the acceptor only learns it after accepting.
+    own = [c for c in env.fnn[0].call("list_channels", [{"only_pending": True}])["channels"]
+           if c["channel_id"] == temporary_id]
+    assert len(own) == 1 and hex_int(own[0]["local_balance"]) == initiator_ckb
+    accepted = env.fnn[1].call("accept_channel", [{
+        "temporary_channel_id": temporary_id, "funding_amount": hex(acceptor_ckb),
+    }])
+    channel_id = accepted["channel_id"]
+    assert channel_id != temporary_id
+    pair = None
+
+    def ready() -> bool:
+        nonlocal pair
+        pair = channel_pair(env, channel_id)
+        if pair is None:
+            return False
+        assert all(c["state"]["state_name"] != "Closed" for c in pair), _summary(pair)
+        return all(c["state"]["state_name"] == "ChannelReady" and settled(c) for c in pair)
+
+    wait_until(ready, timeout_s=env.timeout_s, description="both CKB channels to reach ChannelReady")
+    assert pair is not None
+    principal = (initiator_ckb, acceptor_ckb)
+    assert hex_int(pair[0]["local_balance"]) == hex_int(pair[1]["remote_balance"])
+    assert hex_int(pair[1]["local_balance"]) == hex_int(pair[0]["remote_balance"])
+    assert all(0 <= hex_int(c["local_balance"]) < p for c, p in zip(pair, principal)), (
+        "each side keeps its reserve inside the funding cell")
+    outpoint = unpack_outpoint(pair[0]["channel_outpoint"])
+    assert unpack_outpoint(pair[1]["channel_outpoint"]) == outpoint
+    funding = env.rpc.wait_transaction(outpoint["tx_hash"], timeout_s=env.timeout_s)
+    env.rpc.wait_indexer(funding["tx_status"]["block_number"], timeout_s=env.timeout_s)
+    output = funding["transaction"]["outputs"][hex_int(outpoint["index"])]
+    assert output.get("type") is None
+    assert hex_int(output["capacity"]) == sum(principal), "funding cell must include both pledged amounts"
+    return Channel(channel_id, temporary_id, outpoint, funding, principal, pair)
+
+
 def pay_invoice(env: FiberEnvironment, channel: Channel, amount: int = PAYMENT_AMOUNT) -> tuple[dict[str, Any], dict[str, Any]]:
     before = channel_pair(env, channel.channel_id)
     assert before is not None and all(settled(c) and c["state"]["state_name"] == "ChannelReady" for c in before)
@@ -160,6 +220,7 @@ def pay_invoice(env: FiberEnvironment, channel: Channel, amount: int = PAYMENT_A
             if states == ("Success", "Paid") and balances == expected and remote == expected[::-1] and all(settled(c) for c in pair):
                 assert hex_int(payment["fee"]) == 0, "a direct payment must not charge a forwarding fee"
                 channel.paid += amount
+                channel.last_payment_hash = payment_hash
                 return pair
         time.sleep(0.5)
     raise AssertionError(f"invoice did not settle: status={states}, expected={expected}, channels={_summary(pair)}")

@@ -20,7 +20,9 @@ from tests.harness import (
 FIBER_MODES = (
     "combined-foreground", "combined-daemon", "attached-foreground", "attached-daemon",
 )
-FNN_PORTS = (21714, 21715, 8344, 8345)
+# Node-count cases use three nodes. Ownership checks allow the documented
+# maximum without ever discovering processes by a port alone.
+FNN_PORTS = (*range(21714, 21717), *range(8344, 8347))
 ALL_PORTS = (*DEVNET_PORTS, *FNN_PORTS)
 
 
@@ -49,7 +51,7 @@ class FiberEnvironment:
     runner: OffckbRunner
     rpc: RpcClient
     proxy_rpc: RpcClient
-    fnn: tuple[RpcClient, RpcClient]
+    fnn: tuple[RpcClient, ...]
     accounts: list[Account]
     timeout_s: float
     root: Path
@@ -67,6 +69,8 @@ class FiberEnvironment:
     _ckb_manager: DevnetManager | None = field(default=None, repr=False)
     _groups: set[int] = field(default_factory=set, repr=False)
     _known_pids: set[int] = field(default_factory=set, repr=False)
+    _commands: list[subprocess.Popen] = field(default_factory=list, repr=False)
+    _allowed_binaries: set[Path] = field(default_factory=set, repr=False)
 
     @property
     def foreground_stdout(self) -> Path:
@@ -91,15 +95,27 @@ class FiberEnvironment:
             self.config_path / "fiber" / "logs" / "daemon.pid",
         )
 
-    def start(self) -> None:
+    def start(self, *, extra_args=(), node_count: int = 2, start_ckb: bool = True) -> None:
         assert self.mode in FIBER_MODES
-        occupied = [port for port in ALL_PORTS if is_port_open(port)]
+        assert 1 <= node_count <= 16
+        self.fnn = tuple(RpcClient(f"http://127.0.0.1:{21713 + i}", tx_timeout_s=self.timeout_s)
+                         for i in range(1, node_count + 1))
+        ports = ALL_PORTS if self.mode.startswith("combined") else FNN_PORTS
+        occupied = [port for port in ports if is_port_open(port)]
         assert not occupied, f"Fiber test ports already occupied; refusing to stop their owners: {occupied}"
         for account in self.accounts:
             self.runner.register_secret(account.private_key)
         if self.mode.startswith("attached"):
-            self._start_existing_chain()
+            if not is_port_open(8114) and start_ckb:
+                self.start_existing_chain()
+            assert self.rpc.ready(), "attached Fiber requires an already running owned CKB"
+            self._remember_processes()
+            assert any(_command_references_path(command, self.managed_ckb)
+                       and _command_references_path(command, self.config_path) and "run" in command.split()
+                       for command in self.process_commands().values()), (
+                "refusing to attach to a CKB outside this test environment")
         args = ("node", "--fiber") if self.mode.startswith("combined") else ("fiber", "start")
+        args = (*args, *map(str, extra_args))
         if self.mode.endswith("daemon"):
             self.start_result = self.runner.run(*args, "--daemon", timeout_s=self.startup_timeout_s)
             # No readiness retry here: a premature successful command is a failure.
@@ -114,8 +130,7 @@ class FiberEnvironment:
                     (*self.runner.command, *args), cwd=self.runner.cwd, env=self.runner.env,
                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True,
                 )
-            self._groups.add(self.foreground.pid)
-            self._known_pids.add(self.foreground.pid)
+            self.track_command(self.foreground)
 
             def ready() -> bool:
                 assert self.foreground is not None and self.foreground.poll() is None, (
@@ -137,13 +152,17 @@ class FiberEnvironment:
         self._register_fnn_secrets()
         (self.root / "startup.json").write_text(json.dumps(self.startup_snapshot, indent=2) + "\n")
 
-    def _start_existing_chain(self) -> None:
+    def start_existing_chain(self) -> None:
+        for account in self.accounts:
+            self.runner.register_secret(account.private_key)
         self._ckb_manager = DevnetManager(
             self.runner, self.rpc, self.proxy_rpc, self.managed_ckb,
             startup_timeout_s=self.startup_timeout_s,
         )
         self._ckb_manager.start(use_managed_binary=True)
         self._remember_processes()
+        if self.attached_snapshot is not None:
+            return
         self.rpc.wait_indexer()
         sender, receiver = self.accounts[0], self.accounts[1]
         key = self.root / "secrets" / "existing-chain.key"
@@ -176,20 +195,25 @@ class FiberEnvironment:
             "peers": [client.call("list_peers")["peers"] for client in self.fnn],
         }
 
+    def public_snapshot(self) -> dict[str, Any]:
+        return self._public_snapshot()
+
     def _snapshot_ready(self, snapshot: dict[str, Any]) -> bool:
         infos = snapshot["node_infos"]
         if not all(isinstance(info, dict) and info.get("pubkey") for info in infos):
             return False
-        return all(
-            any(peer.get("pubkey") == infos[1 - i]["pubkey"] for peer in snapshot["peers"][i])
-            for i in range(2)
-        )
+        if len(infos) == 1:
+            return snapshot["peers"] == [[]]
+        return all(any(peer.get("pubkey") == infos[0]["pubkey"] for peer in peers)
+                   for peers in snapshot["peers"][1:]) and all(
+            any(peer.get("pubkey") == info["pubkey"] for peer in snapshot["peers"][0])
+            for info in infos[1:])
 
     def assert_ready_snapshot(self, snapshot: dict[str, Any]) -> None:
         assert snapshot["genesis"] == snapshot["proxy_genesis"]
         assert re.match(rf"{re.escape(self.ckb_version)}(?:\s|$)", snapshot["ckb_version"])
         infos = snapshot["node_infos"]
-        assert infos[0]["pubkey"] != infos[1]["pubkey"], "FNNs must have different network identities"
+        assert len({info["pubkey"] for info in infos}) == len(self.fnn), "FNNs must have different network identities"
         for i, info in enumerate(infos):
             assert info["version"] == self.fnn_version
             assert info["chain_hash"] == snapshot["genesis"]
@@ -201,15 +225,29 @@ class FiberEnvironment:
             return True
         if _command_references_path(command, self.managed_ckb) and _command_references_path(command, self.config_path):
             return "run" in command.split() or "miner" in command.split()
-        return _command_references_path(command, self.managed_fnn) and any(
-            _command_references_path(command, self.config_path / "fiber" / "nodes" / str(i)) for i in (1, 2)
+        return any(_command_references_path(command, path) for path in {self.managed_fnn, *self._allowed_binaries}) and any(
+            _command_references_path(command, self.config_path / "fiber" / "nodes" / str(i)) for i in range(1, 17)
         )
 
+    def allow_binary(self, path: Path) -> None:
+        self._allowed_binaries.add(Path(path).absolute())
+
+    def track_command(self, process: subprocess.Popen) -> None:
+        assert os.getpgid(process.pid) == process.pid, "test commands must own their process group"
+        self._commands.append(process)
+        self._groups.add(process.pid)
+        self._known_pids.add(process.pid)
+
+    def remember_processes(self) -> None:
+        self._remember_processes()
+
     def _remember_processes(self) -> None:
+        for process in self._commands:
+            process.poll()
         # Failed startup may remove PID metadata before an orphan child exits.
         # Discover only children naming this fresh fixture's exact data path.
         process_table = subprocess.run(
-            ["ps", "-axo", "pid=,pgid=,command="], capture_output=True, text=True,
+            ["ps", "-ww", "-axo", "pid=,pgid=,command="], capture_output=True, text=True,
             check=False, timeout=5,
         )
         assert process_table.returncode == 0, "Unable to inspect fixture process ownership"
@@ -256,7 +294,7 @@ class FiberEnvironment:
         return commands
 
     def _register_fnn_secrets(self) -> None:
-        for node in (1, 2):
+        for node in range(1, 17):
             directory = self.config_path / "fiber" / "nodes" / str(node)
             for relative in ("password", "fiber/sk", "ckb/key"):
                 path = directory / relative
@@ -267,6 +305,8 @@ class FiberEnvironment:
                         pass
 
     def _stopped(self) -> bool:
+        for process in self._commands:
+            process.poll()
         if self.foreground is not None:
             self.foreground.poll()
         return (
@@ -297,29 +337,41 @@ class FiberEnvironment:
                 if sig == signal.SIGKILL:
                     raise
 
+    def stop_fiber(self) -> CommandResult | None:
+        """Stop the current manager through its user interface, retaining all data."""
+        self._remember_processes()
+        result = None
+        if self.foreground is not None and self.foreground.poll() is None:
+            os.killpg(self.foreground.pid, signal.SIGINT)
+            wait_until(
+                lambda: self.foreground.poll() is not None and not _process_group_commands(self.foreground.pid),
+                timeout_s=20, description="foreground Fiber manager and children to stop",
+            )
+        elif self.runtime_path.exists() or self.pid_files[1].exists():
+            args = ("node", "stop") if self.mode.startswith("combined") else ("fiber", "stop")
+            result = self.runner.run(*args, timeout_s=30)
+            assert result.json and result.json.get("stopped") is True, "product did not confirm Fiber shutdown"
+        wait_until(lambda: not any(is_port_open(port) for port in FNN_PORTS), timeout_s=20,
+                   description="all Fiber ports to close")
+        wait_until(lambda: not self.runtime_path.exists() and not self.pid_files[1].exists(), timeout_s=5,
+                   description="Fiber runtime and PID metadata to be removed")
+        return result
+
+    def stop(self) -> None:
+        self.stop_fiber()
+        if self._ckb_manager is not None:
+            self._ckb_manager.close()
+        elif self.pid_files[0].exists():
+            self.runner.run("node", "stop", timeout_s=30)
+        wait_until(self._stopped, timeout_s=20, description="all owned Fiber/CKB processes and ports to stop")
+        wait_until(lambda: not any(path.exists() for path in self.pid_files), timeout_s=5,
+                   description="CKB and Fiber PID metadata to be removed")
+
     def close(self) -> None:
-        """Observe the product's shutdown first; fallback cleanup never makes it pass."""
+        """Final teardown. Fallback cleanup never converts a product failure to a pass."""
         failure: BaseException | None = None
         try:
-            self._remember_processes()
-            if self.foreground is not None and self.foreground.poll() is None:
-                os.killpg(self.foreground.pid, signal.SIGINT)
-                wait_until(
-                    lambda: self.foreground.poll() is not None
-                    and not _process_group_commands(self.foreground.pid),
-                    timeout_s=20, description="foreground Fiber manager and children to stop",
-                )
-            elif self.mode.endswith("daemon") and self._groups:
-                args = ("node", "stop") if self.mode.startswith("combined") else ("fiber", "stop")
-                result = self.runner.run(*args, timeout_s=30)
-                assert result.json and result.json.get("stopped") is True, "product did not confirm Fiber shutdown"
-            if self._ckb_manager is not None:
-                self._ckb_manager.close()
-            wait_until(self._stopped, timeout_s=20, description="all owned Fiber/CKB processes and ports to stop")
-            wait_until(
-                lambda: not self.runtime_path.exists() and not any(path.exists() for path in self.pid_files),
-                timeout_s=5, description="OffCKB to remove its Fiber runtime and PID metadata",
-            )
+            self.stop()
         except BaseException as error:
             failure = error
             (self.root / "teardown-failure.txt").write_text(self.runner._redact_text(str(error)) + "\n")
@@ -336,7 +388,7 @@ class FiberEnvironment:
 
     def scrub_secrets(self) -> None:
         self._register_fnn_secrets()
-        for node in (1, 2):
+        for node in range(1, 17):
             directory = self.config_path / "fiber" / "nodes" / str(node)
             for relative in ("password", "fiber/sk", "ckb/key"):
                 (directory / relative).unlink(missing_ok=True)

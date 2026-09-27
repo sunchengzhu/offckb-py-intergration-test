@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from ..harness import hex_int
+import json
+
+from ..harness import CKB, hex_int, rpc_script
 from .flows import (
     PAYMENT_AMOUNT, FiberEnvironment, assert_close_amounts, assert_returned_funds_spendable,
-    close_channel, opened_ckb_channel, pay_invoice,
+    close_channel, open_manually_accepted_ckb_channel, opened_ckb_channel, pay_invoice,
 )
 
 
@@ -46,3 +48,28 @@ def test_cooperative_close_returns_spendable_principal(fiber_env: FiberEnvironme
         closing = close_channel(fiber_env, channel, recipient=recipients[0])
         returned = assert_close_amounts(fiber_env.rpc, channel, closing, recipients)
         assert_returned_funds_spendable(fiber_env, closing, before_close, returned, recipients)
+
+
+# TEST-MAP: FIB-06
+def test_both_sides_fund_a_manually_accepted_ckb_channel(fiber_env: FiberEnvironment) -> None:
+    """手工接受的双向注资：双方都出资并产生找零，资金只落在通道 cell 与两个出资账户。
+
+    发起方只能投入 99 CKB（FNN 要求不低于接受方默认出资额，达到自动接受区间又会被自动接受），
+    而每侧预留 99 CKB，因此该通道内发起方可用余额为 0：本用例判定通道与资金落位，不判定支付。
+    """
+    channel = open_manually_accepted_ckb_channel(fiber_env, 99 * CKB, 5_000 * CKB)
+    assert channel.funding_transaction["tx_status"]["status"] == "committed"
+    for balance, pledge in zip(channel.initial, (99 * CKB, 5_000 * CKB)):
+        assert 0 <= hex_int(balance["local_balance"]) < pledge, "each side keeps its reserve inside the funding cell"
+    # 预留吃满发起方的投入：这一侧在通道内没有可用余额（实测边界，不是断言产品应该如此）。
+    assert hex_int(channel.initial[0]["local_balance"]) == 0
+    funding_index = hex_int(channel.outpoint["index"])
+    account_locks = {
+        json.dumps(rpc_script(account.lock_script), sort_keys=True)
+        for account in (fiber_env.accounts[3], fiber_env.accounts[4])
+    }
+    for index, output in enumerate(channel.funding_transaction["transaction"]["outputs"]):
+        if index == funding_index:
+            continue
+        assert json.dumps(rpc_script(output["lock"]), sort_keys=True) in account_locks, (
+            "the funding transaction must only return change to the two funding accounts")

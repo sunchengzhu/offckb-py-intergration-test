@@ -22,11 +22,12 @@
 | `FIB-LIFE-08` | 所有通道已关闭并完成资金返还，用户停止 CKB 和全部 FNN，执行 `offckb --json clean -d` 后重新联合启动 | CKB 链数据及全部 FNN store 删除；CKB 配置与 spec、Fiber 节点配置及密钥保留；新链不含旧实验交易，FNN 沿用原身份但无旧通道记录，能够重新开通道并支付 | 开发链已重置而 FNN 仍使用旧通道数据库，或数据清理误删用户配置 | P0 |
 | `FIB-LIFE-09` | 所有通道已关闭并完成资金返还，用户停止 CKB 和全部 FNN，执行 `offckb --json clean` 后重新联合启动 | 整个 devnet 目录及其中的 Fiber 配置、密钥、store 和日志被删除，目录外工具缓存保留；重新生成可用链与新的 Fiber 网络身份，旧实验交易和通道不再存在，能够重新开通道并支付 | 全量重置残留旧 Fiber 状态导致新链不可用，或越界删除已安装工具 | P0 |
 | `FIB-LIFE-10` | 用户在 FNN 仍由联合管理或独立管理运行时，分别尝试 `fiber clean --data --yes`、`fiber clean --yes`、`clean -d` 和 `clean` | 四种清理均非零退出并给出先停止服务的提示；运行中的链、通道数据、身份和配置未被删除，原服务及通道仍可完成支付；正常停止后可执行对应清理 | 运行中的 FNN 数据库被删除，造成通道实验损坏或资金状态丢失 | P0 |
+| `FIB-LIFE-11` | 用户的双节点环境已经就绪且尚无通道实验，节点 1 的 FNN 意外退出；分别使用前台 `node --fiber` 联合管理和已有链上的前台 `fiber start` 独立管理，随后在同一目录重新启动 | 管理进程非零退出并指出故障节点；联合管理回收 CKB、miner、proxy 和其余 FNN，独立管理只回收 FNN、原 CKB 继续产块且旧交易仍 committed；所属端口释放、运行元数据删除，配置、身份和数据保留；原目录同版本重启沿用原身份并自动互联，能重新开通普通 CKB 通道并完成一次支付 | 单个 FNN 已退出却仍显示整体可用，残留进程或记录阻塞重启，或故障清理越界停止已有开发链 | P1 |
 
 ## 判定与范围边界
 
 - 停止只表示进程退出；以原通道恢复和再次支付证明数据可继续使用。保留身份通过 `node_info` 的公开身份和资金账户判断，密钥文件只比较是否保留，不输出内容。
 - 清理后的“旧实验交易不存在”通过 CKB RPC 查询专门创建且不会由初始化重建的交易判断；不能仅用 genesis 或块高判断新旧链。删除 FNN store 不要求链上已经结算的旧交易消失。
-- FNN 单独停止和运行中清理保护涵盖前台、daemon；不扩展为进程崩溃、PID 复用、数据库锁实现或 FNN 跨版本迁移矩阵。交互确认和取消另见安装与交互领域评审。
+- FNN 单独停止和运行中清理保护涵盖前台、daemon。意外退出只选一个已就绪、尚无通道实验的 FNN，验证两种管理范围的回收与原目录恢复；不扩展为全部组件崩溃、信号竞态、通道崩溃一致性、PID 复用、数据库锁实现或 FNN 跨版本迁移矩阵。交互确认和取消另见安装与交互领域评审。
 
 依据：[OffCKB 联合启动与停止](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/cmd/node.ts)、[Fiber 停止的管理范围](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/fiber/daemon.ts)、[Fiber 清理](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/fiber/clean.ts)、[devnet 清理](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/cmd/clean.ts)、[Fiber 目录与账户分配](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/fiber/paths.ts)。

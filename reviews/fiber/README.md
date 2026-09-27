@@ -8,6 +8,7 @@
 
 - OffCKB：`0.5.0-canary-ee0ad6b`，固定提交 [ee0ad6b](https://github.com/ckb-devrel/offckb/tree/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2)。
 - FNN：该提交绑定的 `v0.9.0`，固定提交 [e6cb7ac](https://github.com/nervosnetwork/fiber/tree/e6cb7ac7770b1798a1ad5dfb9a8f4ae5db52036f)。分析使用这一版本的 RPC 和配置。
+- 版本选择边界：当前 canary 原生提供 `fiber start [FNN-Version]`、`node --fiber --fnn-version` 及 `config set fnn-version`，但托管支持列表只有 `0.9.0`。官方最新 [v0.9.1](https://github.com/nervosnetwork/fiber/releases/tag/v0.9.1) 只能通过 `--binary-path` / `--fnn-binary-path` 指定真实二进制运行；仅保存配置值不能使它进入托管支持列表。本轮测试版本仍为 `0.9.0`，是否另测新版本需先决定范围。
 
 ## 测试领域
 
@@ -21,6 +22,7 @@
 | 重置实验与数据保护（P0） | `fiber clean --data`、`fiber clean`、`clean -d`、`clean` | 分清 FNN store、身份/配置和 CKB 链数据的删除范围；运行中拒绝不安全清理，保留范围正确，重建后可重新使用。 | [停止、重启与清理](lifecycle-state.md) |
 | 查看与调整环境（P1） | `fiber status/logs`、`config get/set fnn-version`、节点数量与二进制选项、`nodes.yml` | 状态和日志对应实际节点；用户设置在重启后生效；修改配置不能串用网络、账户或节点。默认版本选择与自定义二进制分别验证。 | [配置与诊断](configuration-diagnostics.md) |
 | 启动失败后恢复（P1） | 错误 FNN 路径、端口占用、重复启动、余额不足后的修正重试 | 错误可定位；回收本次启动的组件，保护原有服务与数据；修正后在同一隔离环境可正常启动。 | [启动失败与恢复](startup-recovery.md) |
+| 并发操作与异常退出后的恢复（P1） | 两个终端同时执行 `node --fiber` / `fiber start` / `fiber clean`；上次异常退出后再次启动 | 同一环境同一时刻只允许一个进程修改，冲突时非零退出并说明原因且不影响正在运行的一方；不被存活进程持有的残留锁可回收，仍被持有的锁不被抢占；store 被占用时明确拒绝而不是猜测。 | [并发操作与环境互斥](env-mutex.md) |
 | 使用自己的测试代币（P1） | OffCKB 发行/转账 UDT，FNN 开通道、接受通道及支付 | 使用 account 19 对应 whitelist；双方准备匹配资产和 CKB 容量；验证 type script、数量单位和通道接受方式，完成代表性 UDT 支付。 | [UDT 通道支付](udt-payments.md) |
 | 旧环境升级（P1） | 0.4.13 旧 devnet 换装 canary | 旧链可继续普通开发；缺少 Fiber 合约时给出重建指导；`clean -d` 保留旧 spec，不能当作已完成迁移。 | [旧开发环境升级](compatibility.md) |
 | 首次下载与平台兼容（独立环境） | FNN 下载、版本校验、交互流程、不同操作系统 | 下载的版本和布局可被 OffCKB 使用；下载失败可恢复；平台与交互行为单独验收。 | [下载、平台与交互](installation-platforms.md) |
@@ -41,7 +43,7 @@
 - 继续使用本工程的 Python/pytest 黑盒方式，通过隔离安装的 OffCKB、真实 CKB/FNN、公开 RPC、文件和进程验证。FNN 上游 Rust/Bruno 测试只作为行为参考，不替代本工程验收。
 - 核心场景预备真实 CKB `0.208.0` 与 FNN `0.9.0`，保留默认选择路径；下载另标 `network`。当前 runner 支持 Linux/macOS，Windows 另行安排。所有完成状态使用有截止时间的轮询。
 - Fiber 使用独立用户目录和 fixture，串行占用 CKB 端口及对应 FNN 端口。默认两节点的 RPC 为 `21714/21715`、P2P 为 `8344/8345`；其账户为内置 account 3/4，不能与原资产测试共享资金状态。
-- 原有账户、资产、项目、系统脚本与清理用例继续回归；它们没有启动 FNN。特别是 `SYS-01/02` 只验证旧脚本代表项，UDT 用例没有验证 account 19 的 Fiber whitelist，普通重启也不能证明通道恢复。
+- 原有账户、资产、项目、系统脚本与清理用例继续回归；它们没有启动 FNN。`SYS-01/02` 验证旧脚本代表项，`SYS-03` 验证新增 Fiber 脚本的查询与文件导出；UDT 用例检查 account 19 对应 whitelist，Fiber 生命周期用例另外验证通道恢复，不能以普通 CKB 重启替代。
 - 首批使用普通本地 devnet，完成双节点 CKB 通道建立、一次普通 invoice 支付、协作关闭通道及资金返还确认。多跳/MPP、跨链与 LND、watchtower 惩罚、强制关闭争议、FNN 跨版本数据库迁移及协议压力矩阵不纳入本轮；公共网络和 fork 的不支持提示仍属于 OffCKB 入口保护。
 
 集成依据：[OffCKB Fiber 使用说明](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/README.md)、[账户与端口](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/fiber/paths.ts)、[合约与 UDT whitelist](https://github.com/ckb-devrel/offckb/blob/ee0ad6bfd30f5af131da3ad7b4f4a29bf0af8ca2/src/fiber/scripts.ts)、[FNN RPC 文档](https://github.com/nervosnetwork/fiber/blob/e6cb7ac7770b1798a1ad5dfb9a8f4ae5db52036f/crates/fiber-lib/src/rpc/README.md)。

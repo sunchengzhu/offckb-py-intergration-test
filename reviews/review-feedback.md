@@ -10,3 +10,5 @@
 - model: unavailable | cases: PR 508 与整体分类一致性 | feedback: 那508呢 难道不是包版本的维护 你自己在检查一下
 - model: unavailable | cases: Fiber 测试分析与 PR 分类的范围一致性 | feedback: 测试分析不需要相应调整吧
 - model: unavailable | cases: Fiber 全领域用例完整性与评审推进顺序 | feedback: 这五条是可以的 但是为什么每继续做剩下的测试分析的用例的补充 我意思就是你的用例不够完整 这个难道是ai-test-agent规范要求的吗
+- model: deepseek-flash | cases: FIB-LOCK-02 | feedback: 实现自动化时按被测源码确认：环境锁只在"操作进行期间"持有，fiber start 就绪后立即释放（env-lock.ts 注释 "released after the operation, not for the lifetime of the managed processes"），因此原预期"环境中最终只保留本次进程的锁记录"不可观察；已改为以"启动成功、环境可用、后继命令不再被阻塞"判定，并在判定边界补充锁有效期说明
+- model: unavailable | cases: FNN 版本选择与剩余测试缺口 | feedback: 确认一点 你目前测试的fnn版本是0.9.1吗 既然offckb支持指定fnn的版本 就默认配最新的release的fnn版本吧 另外 剩下的缺口 还有成本较低 能马上覆盖到的吗 如果这样的话 值得投入

@@ -107,6 +107,8 @@ _RUN_DIRECTORY = pytest.StashKey[_RunDirectory]()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--fiber-network", action="store_true", help="Enable Fiber installation tests using real HTTPS downloads")
+    parser.addoption("--fiber-tty", action="store_true", help="Enable Fiber cleanup prompts through a real terminal")
     group = parser.getgroup("offckb integration")
     group.addoption(
         "--offckb-source",
