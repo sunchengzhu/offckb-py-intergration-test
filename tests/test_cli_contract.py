@@ -168,3 +168,35 @@ def test_business_errors_are_structured_and_do_not_disclose_keys_or_stacks(
     )
     assert not leaked, "private key leaked"
     _assert_no_devnet_started(uninitialized_devnet)
+
+
+# TEST-MAP: CLI-08
+def test_fiber_status_starts_without_punycode_deprecation(uninitialized_devnet: DevnetManager) -> None:
+    """
+    1. 确认被测包版本适用，在端口空闲的隔离环境中启用 Node.js 待弃用检查。
+    2. 通过已安装的 OffCKB 查询尚未创建的 Fiber 环境。
+    3. 检查命令成功、状态正确，且原始 stderr 没有弃用警告并符合 JSON 模式。
+    """
+    # 1. 旧发布包尚未包含修复；新包启用严格弃用检查并保留真实警告输出。
+    runner = uninitialized_devnet.runner
+    package = json.loads((runner.cli_entry.parent.parent / "package.json").read_text(encoding="utf-8"))
+    version = str(package["version"])
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if match:
+        number = tuple(int(part) for part in match.groups())
+        if number < (0, 5, 0) or (number == (0, 5, 0) and "-" in version):
+            pytest.skip(f"@offckb/cli {version} predates the PR #543 fix")
+    runner.env.pop("NODE_NO_WARNINGS", None)
+    runner.env["NODE_OPTIONS"] = "--pending-deprecation --throw-deprecation"
+
+    # 2. 调用隔离安装包的公开 CLI 查询 Fiber 状态。
+    result = runner.run("fiber", "status", check=False, timeout_s=15)
+
+    # 3. 核对结果、空环境状态与 stderr 的警告和 NDJSON 契约。
+    assert result.returncode == 0, runner._redact_text(result.stderr)
+    status = json.loads(result.stdout)
+    assert status["ok"] is True and status["command"] == "fiber.status"
+    assert status["nodes"] == [] and status["ckb"]["status"] == "stopped"
+    assert "DEP0040" not in result.stderr
+    assert "punycode" not in result.stderr.lower()
+    assert all(isinstance(json.loads(line), dict) for line in result.stderr.splitlines() if line.strip())
