@@ -60,6 +60,15 @@ make test TESTS='tests/test_transaction_debugging.py tests/test_logs.py tests/te
 
 聚焦“配置生效与版本入口”：`make test TESTS='tests/test_global_settings.py tests/test_devnet_configuration.py tests/test_cli_contract.py'`。版本选择用例需要两个真实本地 CKB：`CKB_BIN` 与包默认版本不同，`DEFAULT_CKB_BIN` 与包默认版本一致；两者都放入隔离托管目录，验证实际选中的二进制。日志配置用例不需要项目构建或 debugger。
 
+聚焦“CLI 启动不输出 `punycode` 弃用警告”，以 [OffCKB PR #543](https://github.com/ckb-devrel/offckb/pull/543) 的固定 head 验收：
+
+```bash
+make prepare OFFCKB_REF=b848d11afb60731a08acd4739a2a686b0534afc7
+make test OFFCKB_REF=b848d11afb60731a08acd4739a2a686b0534afc7 TESTS=tests/test_cli_contract.py::test_fiber_status_starts_without_punycode_deprecation
+```
+
+本用例使用 Node.js 20+ 和本地 CKB 可执行文件，但不启动 CKB/FNN；早于 `0.5.0` 的发布包会跳过该用例。使用其他已准备包时，两个命令的版本选择也须一致。
+
 配置权限故障用例需以普通用户运行，使文件权限能够实际阻止读写；root 用户会绕过该前置条件。
 
 聚焦“启动失败后的恢复与配置保护”：`make test TESTS='tests/test_node_recovery.py tests/test_node_stop_safety.py tests/test_devnet_configuration.py'`。端口冲突和无关进程均由测试创建，失败清理在任何兜底操作前判定；批量配置检查使用已经产块并停止的真实链数据。这些场景不需要项目构建或 debugger。
